@@ -4,23 +4,22 @@
 
 // DOM bindings for the Window object.
 
-use dom::bindings::utils::{rust_box, squirrel_away, CacheableWrapper};
-use dom::bindings::utils::{WrapperCache};
+use dom::bindings::utils::{CacheableWrapper, JSManaged, unwrap};
+use dom::bindings::utils::{WrapperCache, DOM_OBJECT_SLOT};
 use dom::window::Window;
 use super::utils;
 
 use std::cast;
-use std::libc;
 use std::libc::c_uint;
 use std::ptr::null;
 use std::ptr;
 use std::result;
+use std::unstable::intrinsics;
 use js::crust::{JS_PropertyStub, JS_StrictPropertyStub};
 use js::global::jsval_to_rust_str;
 use js::glue::*;
 use js::glue::RUST_JSVAL_TO_INT;
 use js::jsapi::{JS_DefineFunctions, JS_GC, JS_GetRuntime};
-use js::jsapi::{JS_GetReservedSlot, JS_SetReservedSlot};
 use js::jsapi::{JS_ValueToString};
 use js::jsapi::{JSContext, JSVal, JSObject, JSBool, JSFreeOp, JSFunctionSpec};
 use js::jsapi::{JSNativeWrapper};
@@ -37,8 +36,11 @@ extern fn alert(cx: *JSContext, argc: c_uint, vp: *JSVal) -> JSBool {
     if jsstr.is_null() {
         return 0;
     }
-    
-    (*unwrap(JS_THIS_OBJECT(cx, vp))).payload.alert(jsval_to_rust_str(cx, jsstr));
+
+    let win = JSManaged::from_raw::<Window>(JS_THIS_OBJECT(cx, vp));
+    do win.with_imm |win| {
+        win.alert(jsval_to_rust_str(cx, jsstr));
+    }
 
     JS_SET_RVAL(cx, vp, JSVAL_NULL);
     return 1;
@@ -52,9 +54,11 @@ extern fn setTimeout(cx: *JSContext, argc: c_uint, vp: *JSVal) -> JSBool {
 
         //TODO: don't crash when passed a non-integer value for the timeout
 
-        (*unwrap(JS_THIS_OBJECT(cx, vp))).payload.setTimeout(
-            RUST_JSVAL_TO_INT(*ptr::offset(argv, 1)) as int,
-            argc, argv);
+        let win = JSManaged::from_raw::<Window>(JS_THIS_OBJECT(cx, vp));
+        do win.with_imm |win| {
+            win.setTimeout(RUST_JSVAL_TO_INT(*ptr::offset(argv, 1)) as int,
+                           argc, argv);
+        }
 
         JS_SET_RVAL(cx, vp, JSVAL_NULL);
         return 1;
@@ -63,7 +67,10 @@ extern fn setTimeout(cx: *JSContext, argc: c_uint, vp: *JSVal) -> JSBool {
 
 extern fn close(cx: *JSContext, _argc: c_uint, vp: *JSVal) -> JSBool {
     unsafe {
-        (*unwrap(JS_THIS_OBJECT(cx, vp))).payload.close();
+        let win = JSManaged::from_raw::<Window>(JS_THIS_OBJECT(cx, vp));
+        do win.with_imm |win| {
+            win.close();
+        }
         JS_SET_RVAL(cx, vp, JSVAL_NULL);
         return 1;
     }
@@ -77,20 +84,18 @@ extern fn gc(cx: *JSContext, _argc: c_uint, _vp: *JSVal) -> JSBool {
     }
 }
 
-unsafe fn unwrap(obj: *JSObject) -> *rust_box<Window> {
-    let val = JS_GetReservedSlot(obj, 0);
-    cast::transmute(RUST_JSVAL_TO_PRIVATE(val))
-}
-
 extern fn finalize(_fop: *JSFreeOp, obj: *JSObject) {
-    debug!("finalize!");
+    debug!("window finalize (0x%x)!", obj as uint);
     unsafe {
-        let val = JS_GetReservedSlot(obj, 0);
-        let _: @Window = cast::transmute(RUST_JSVAL_TO_PRIVATE(val));
+        let orig_win = unwrap::<*mut Window>(obj);
+        let win = intrinsics::uninit();
+        intrinsics::move_val(&mut *orig_win, win);
     }
 }
 
 pub fn init(compartment: @mut Compartment) {
+    JSManaged::sanity_check::<Window>();
+
     let proto = utils::define_empty_prototype(~"Window", None, compartment);
     compartment.register_class(utils::instance_jsclass(~"WindowInstance", finalize, null()));
 
@@ -138,7 +143,7 @@ pub fn init(compartment: @mut Compartment) {
     }
 }
 
-pub fn create(compartment: @mut Compartment, win: @mut Window) {
+pub fn create(compartment: @mut Compartment, mut win: Window) -> JSManaged<Window> {
     let obj = result::unwrap(
                  compartment.new_object_with_proto(~"WindowInstance",
                                                    ~"Window", null()));
@@ -146,8 +151,9 @@ pub fn create(compartment: @mut Compartment, win: @mut Window) {
     win.get_wrappercache().set_wrapper(obj.ptr);
 
     unsafe {
-        let raw_ptr: *libc::c_void = cast::transmute(squirrel_away(win));
-        JS_SetReservedSlot(obj.ptr, 0, RUST_PRIVATE_TO_JSVAL(raw_ptr));
+        let raw_storage = GetInlineStorage(obj.ptr, DOM_OBJECT_SLOT) as *mut Window;
+        let storage: &mut Window = &mut *raw_storage;
+        intrinsics::move_val_init(storage, win);
 
         //TODO: All properties/methods on Window need to be available on the global
         //      object as well. We probably want a special JSClass with a resolve hook.
@@ -155,6 +161,7 @@ pub fn create(compartment: @mut Compartment, win: @mut Window) {
                                     JS_PropertyStub, JS_StrictPropertyStub,
                                     JSPROP_ENUMERATE);
     }
+    JSManaged::from_raw(obj.ptr)
 }
 
 impl CacheableWrapper for Window {
@@ -162,7 +169,12 @@ impl CacheableWrapper for Window {
         unsafe { cast::transmute(&self.wrapper) }
     }
 
-    fn wrap_object_shared(@mut self, _cx: *JSContext, _scope: *JSObject) -> *JSObject {
+    fn wrap_object_shared(self, _cx: *JSContext, _scope: *JSObject) -> *JSObject {
         fail!(~"should this be called?");
+    }
+
+    fn init_wrapper(self) -> *JSObject {
+        //XXXjdm
+        ptr::null()
     }
 }

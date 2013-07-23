@@ -3,46 +3,52 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use dom::bindings::element;
-use dom::bindings::node::unwrap;
+use dom::bindings::node::NodeBase;
 use dom::bindings::utils;
-use dom::bindings::utils::{DOM_OBJECT_SLOT, CacheableWrapper};
-use dom::node::{AbstractNode, Text, Comment, Doctype, TextNodeTypeId, CommentNodeTypeId};
+use dom::bindings::utils::{DOM_OBJECT_SLOT, CacheableWrapper, WrapperCache, JSManaged, unwrap};
+use dom::node::{Text, Comment, Doctype, TextNodeTypeId, CommentNodeTypeId};
 use dom::node::{DoctypeNodeTypeId, ScriptView};
 
 use js::jsapi::{JSFreeOp, JSObject, JSContext};
-use js::jsapi::{JS_SetReservedSlot};
-use js::glue::{RUST_PRIVATE_TO_JSVAL};
+use js::glue::{GetInlineStorage};
 use js::rust::{Compartment, jsobj};
 
-use std::cast;
-use std::libc;
+use std::ptr;
 use std::result;
+use std::unstable::intrinsics;
 
 extern fn finalize_text(_fop: *JSFreeOp, obj: *JSObject) {
-    debug!("text finalize: %?!", obj as uint);
+    debug!("text finalize (0x%x)!", obj as uint);
     unsafe {
-        let node: AbstractNode<ScriptView> = unwrap(obj);
-        let _elem: ~Text = cast::transmute(node.raw_object());
+        let orig_text = unwrap::<*mut Text>(obj);
+        let text = intrinsics::uninit();
+        intrinsics::move_val(&mut *orig_text, text);
     }
 }
 
 extern fn finalize_comment(_fop: *JSFreeOp, obj: *JSObject) {
-    debug!("comment finalize: %?!", obj as uint);
+    debug!("comment finalize (0x%x)!", obj as uint);
     unsafe {
-        let node: AbstractNode<ScriptView> = unwrap(obj);
-        let _elem: ~Comment = cast::transmute(node.raw_object());
+        let orig_comment = unwrap::<*mut Comment>(obj);
+        let comment = intrinsics::uninit();
+        intrinsics::move_val(&mut *orig_comment, comment);
     }
 }
 
 extern fn finalize_doctype(_fop: *JSFreeOp, obj: *JSObject) {
-    debug!("doctype finalize: %?!", obj as uint);
+    debug!("doctype finalize (0x%x)!", obj as uint);
     unsafe {
-        let node: AbstractNode<ScriptView> = unwrap(obj);
-        let _elem: ~Doctype<ScriptView> = cast::transmute(node.raw_object());
+        let orig_doctype = unwrap::<*mut Doctype<ScriptView>>(obj);
+        let doctype = intrinsics::uninit();
+        intrinsics::move_val(&mut *orig_doctype, doctype);
     }
 }
 
 pub fn init(compartment: @mut Compartment) {
+    JSManaged::sanity_check::<Comment>();
+    JSManaged::sanity_check::<Text>();
+    JSManaged::sanity_check::<Doctype<ScriptView>>();
+
     let _ = utils::define_empty_prototype(~"CharacterData", Some(~"Node"), compartment);
     
     let _ = utils::define_empty_prototype(~"TextPrototype",
@@ -68,8 +74,8 @@ pub fn init(compartment: @mut Compartment) {
     
 }
 
-pub fn create(cx: *JSContext, node: &mut AbstractNode<ScriptView>) -> jsobj {
-    let (proto, instance) = match node.type_id() {
+pub fn create<T: NodeBase<ScriptView>>(cx: *JSContext, mut node: T) -> jsobj {
+    let (proto, instance) = match node.base_node().type_id {
       TextNodeTypeId => (~"TextPrototype", ~"Text"),
       CommentNodeTypeId => (~"CommentPrototype", ~"Comment"),
       DoctypeNodeTypeId => (~"DocumentTypePrototype", ~"DocumentType"),
@@ -83,14 +89,31 @@ pub fn create(cx: *JSContext, node: &mut AbstractNode<ScriptView>) -> jsobj {
                                                                proto,
                                                                compartment.global_obj.ptr));
 
-    let cache = node.get_wrappercache();
+    let cache = node.base_node_mut().get_wrappercache();
     assert!(cache.get_wrapper().is_null());
     cache.set_wrapper(obj.ptr);
 
     unsafe {
-        let raw_ptr = node.raw_object() as *libc::c_void;
-        JS_SetReservedSlot(obj.ptr, DOM_OBJECT_SLOT as u32, RUST_PRIVATE_TO_JSVAL(raw_ptr));
+        let raw_storage: *mut T = GetInlineStorage(obj.ptr, DOM_OBJECT_SLOT) as *mut T;
+        let storage: &mut T = &mut *raw_storage;
+        debug!("(0x%x) storing in 0x%x", obj.ptr as uint, ptr::to_unsafe_ptr(storage) as uint);
+        intrinsics::move_val_init(storage, node);
     }
 
     return obj;
+}
+
+impl CacheableWrapper for Text {
+    fn get_wrappercache(&mut self) -> &mut WrapperCache {
+        self.parent.parent.get_wrappercache()
+    }
+
+    fn wrap_object_shared(self, _cx: *JSContext, _scope: *JSObject) -> *JSObject {
+        fail!(~"need to implement wrapping");
+    }
+
+    pub fn init_wrapper(self) -> *JSObject {
+        //XXXjdm
+        ptr::null()
+    }
 }

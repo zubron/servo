@@ -5,7 +5,8 @@
 //! The core DOM types. Defines the basic DOM hierarchy as well as all the HTML elements.
 
 use dom::bindings::node;
-use dom::bindings::utils::WrapperCache;
+use dom::bindings::node::{NodeBase};
+use dom::bindings::utils::{WrapperCache, JSManaged, CacheableWrapper};
 use dom::bindings;
 use dom::characterdata::CharacterData;
 use dom::document::Document;
@@ -18,6 +19,8 @@ use std::cast::transmute;
 use std::libc::c_void;
 use std::uint;
 use js::rust::Compartment;
+use js::jsapi::{JSContext, JSObject, JSVal};
+use js::glue::{RUST_OBJECT_TO_JSVAL};
 use netsurfcss::util::VoidPtrLike;
 use servo_util::tree::{TreeNode, TreeNodeRef, TreeUtils};
 
@@ -60,6 +63,13 @@ pub struct Node<View> {
 
     abstract: Option<AbstractNode<View>>,
 
+    out_of_line: ~NodeOutOfLine<View>,
+
+    /// Layout information. Only the layout task may touch this data.
+    priv layout_data: Option<@mut ()>
+}
+
+struct NodeOutOfLine<View> {
     /// The parent of this node.
     parent_node: Option<AbstractNode<View>>,
 
@@ -76,10 +86,7 @@ pub struct Node<View> {
     prev_sibling: Option<AbstractNode<View>>,
 
     /// The document that this node belongs to.
-    owner_doc: Option<@mut Document>,
-
-    /// Layout information. Only the layout task may touch this data.
-    priv layout_data: Option<@mut ()>
+    owner_doc: Option<JSManaged<Document>>,
 }
 
 /// The different types of nodes.
@@ -157,35 +164,35 @@ impl<View> Clone for AbstractNode<View> {
 
 impl<View> TreeNode<AbstractNode<View>> for Node<View> {
     fn parent_node(&self) -> Option<AbstractNode<View>> {
-        self.parent_node
+        self.out_of_line.parent_node
     }
     fn first_child(&self) -> Option<AbstractNode<View>> {
-        self.first_child
+        self.out_of_line.first_child
     }
     fn last_child(&self) -> Option<AbstractNode<View>> {
-        self.last_child
+        self.out_of_line.last_child
     }
     fn prev_sibling(&self) -> Option<AbstractNode<View>> {
-        self.prev_sibling
+        self.out_of_line.prev_sibling
     }
     fn next_sibling(&self) -> Option<AbstractNode<View>> {
-        self.next_sibling
+        self.out_of_line.next_sibling
     }
 
     fn set_parent_node(&mut self, new_parent_node: Option<AbstractNode<View>>) {
-        self.parent_node = new_parent_node
+        self.out_of_line.parent_node = new_parent_node
     }
     fn set_first_child(&mut self, new_first_child: Option<AbstractNode<View>>) {
-        self.first_child = new_first_child
+        self.out_of_line.first_child = new_first_child
     }
     fn set_last_child(&mut self, new_last_child: Option<AbstractNode<View>>) {
-        self.last_child = new_last_child
+        self.out_of_line.last_child = new_last_child
     }
     fn set_prev_sibling(&mut self, new_prev_sibling: Option<AbstractNode<View>>) {
-        self.prev_sibling = new_prev_sibling
+        self.out_of_line.prev_sibling = new_prev_sibling
     }
     fn set_next_sibling(&mut self, new_next_sibling: Option<AbstractNode<View>>) {
-        self.next_sibling = new_next_sibling
+        self.out_of_line.next_sibling = new_next_sibling
     }
 }
 
@@ -219,6 +226,7 @@ impl<View> AbstractNode<View> {
     /// Sets the layout data, unsafely casting the type as layout wishes. Only layout is allowed
     /// to call this. This is wildly unsafe and is therefore marked as such.
     pub unsafe fn unsafe_set_layout_data<T>(self, data: @mut T) {
+        cast::forget(data);
         do self.with_mut_base |base| {
             base.layout_data = Some(transmute(data))
         }
@@ -233,56 +241,66 @@ impl<View> AbstractNode<View> {
 
     /// Returns the parent node of this node. Fails if this node is borrowed mutably.
     pub fn parent_node(self) -> Option<AbstractNode<View>> {
-        self.with_base(|b| b.parent_node)
+        self.with_base(|b| b.out_of_line.parent_node)
     }
 
     /// Returns the first child of this node. Fails if this node is borrowed mutably.
     pub fn first_child(self) -> Option<AbstractNode<View>> {
-        self.with_base(|b| b.first_child)
+        self.with_base(|b| b.out_of_line.first_child)
     }
 
     /// Returns the last child of this node. Fails if this node is borrowed mutably.
     pub fn last_child(self) -> Option<AbstractNode<View>> {
-        self.with_base(|b| b.last_child)
+        self.with_base(|b| b.out_of_line.last_child)
     }
 
     /// Returns the previous sibling of this node. Fails if this node is borrowed mutably.
     pub fn prev_sibling(self) -> Option<AbstractNode<View>> {
-        self.with_base(|b| b.prev_sibling)
+        self.with_base(|b| b.out_of_line.prev_sibling)
     }
 
     /// Returns the next sibling of this node. Fails if this node is borrowed mutably.
     pub fn next_sibling(self) -> Option<AbstractNode<View>> {
-        self.with_base(|b| b.next_sibling)
+        self.with_base(|b| b.out_of_line.next_sibling)
     }
 
     //
     // Downcasting borrows
     //
 
-    pub fn transmute<T, R>(self, f: &fn(&T) -> R) -> R {
+    pub fn transmute<T: NodeBase<View>+CacheableWrapper, R>(self, f: &fn(&T) -> R) -> R {
         unsafe {
-            let node_box: *mut bindings::utils::rust_box<Node<View>> = transmute(self.obj);
-            let node = &mut (*node_box).payload;
-            let old = node.abstract;
-            node.abstract = Some(self);
-            let box: *bindings::utils::rust_box<T> = transmute(self.obj);
-            let rv = f(&(*box).payload);
-            node.abstract = old;
-            rv
+            let wrapper: *JSObject = transmute(self.obj);
+            debug!("transmuting wrapper 0x%x", wrapper as uint);
+            let managed = JSManaged::from_raw::<Node<View>>(wrapper);
+            do managed.with_mut |node| {
+                let old = node.abstract;
+                node.abstract = Some(self);
+                let managed = JSManaged::from_raw::<T>(wrapper);
+                let rv = do managed.with_imm |payload| {
+                    f(payload)
+                };
+                node.abstract = old;
+                rv
+            }
         }
     }
 
-    pub fn transmute_mut<T, R>(self, f: &fn(&mut T) -> R) -> R {
+    pub fn transmute_mut<T: CacheableWrapper, R>(self, f: &fn(&mut T) -> R) -> R {
         unsafe {
-            let node_box: *mut bindings::utils::rust_box<Node<View>> = transmute(self.obj);
-            let node = &mut (*node_box).payload;
-            let old = node.abstract;
-            node.abstract = Some(self);
-            let box: *bindings::utils::rust_box<T> = transmute(self.obj);
-            let rv = f(cast::transmute(&(*box).payload));
-            node.abstract = old;
-            rv
+            let wrapper: *JSObject = transmute(self.obj);
+            debug!("transmuting wrapper 0x%x", wrapper as uint);
+            let managed = JSManaged::from_raw::<Node<View>>(wrapper);
+            do managed.with_mut |node| {
+                let old = node.abstract;
+                node.abstract = Some(self);
+                let managed = JSManaged::from_raw::<T>(wrapper);
+                let rv = do managed.with_mut |payload| {
+                    f(payload)
+                };
+                node.abstract = old;
+                rv
+            }
         }
     }
 
@@ -381,23 +399,22 @@ impl<View> AbstractNode<View> {
 }
 
 impl Node<ScriptView> {
-    pub unsafe fn as_abstract_node<N>(node: ~N) -> AbstractNode<ScriptView> {
-        // This surrenders memory management of the node!
-        let mut node = AbstractNode {
-            obj: transmute(node),
-        };
+    pub unsafe fn as_abstract_node<N: NodeBase<ScriptView>+CacheableWrapper>(node: N) -> AbstractNode<ScriptView> {
         let cx = global_script_context().js_compartment.cx.ptr;
-        node::create(cx, &mut node);
-        node
+        let wrapper = node::create(cx, node);
+
+        AbstractNode {
+            obj: transmute(wrapper.ptr),
+        }
     }
 
-    pub fn add_to_doc(&mut self, doc: @mut Document) {
-        self.owner_doc = Some(doc);
-        let mut node = self.first_child;
+    pub fn add_to_doc(&mut self, doc: &JSManaged<Document>) {
+        self.out_of_line.owner_doc = Some(*doc);
+        let mut node = self.out_of_line.first_child;
         while node.is_some() {
             for node.get().traverse_preorder |node| {
                 do node.with_mut_base |node_base| {
-                    node_base.owner_doc = Some(doc);
+                    node_base.out_of_line.owner_doc = Some(*doc);
                 }
             };
             node = node.get().next_sibling();
@@ -411,13 +428,15 @@ impl Node<ScriptView> {
 
             abstract: None,
 
-            parent_node: None,
-            first_child: None,
-            last_child: None,
-            next_sibling: None,
-            prev_sibling: None,
+            out_of_line: ~NodeOutOfLine {
+                parent_node: None,
+                first_child: None,
+                last_child: None,
+                next_sibling: None,
+                prev_sibling: None,
 
-            owner_doc: None,
+                owner_doc: None,
+            },
 
             layout_data: None,
         }
@@ -433,7 +452,7 @@ impl Node<ScriptView> {
     }
 
     pub fn getNextSibling(&mut self) -> Option<&mut AbstractNode<ScriptView>> {
-        match self.next_sibling {
+        match self.out_of_line.next_sibling {
             // transmute because the compiler can't deduce that the reference
             // is safe outside of with_mut_base blocks.
             Some(ref mut n) => Some(unsafe { cast::transmute(n) }),
@@ -442,7 +461,7 @@ impl Node<ScriptView> {
     }
 
     pub fn getFirstChild(&mut self) -> Option<&mut AbstractNode<ScriptView>> {
-        match self.first_child {
+        match self.out_of_line.first_child {
             // transmute because the compiler can't deduce that the reference
             // is safe outside of with_mut_base blocks.
             Some(ref mut n) => Some(unsafe { cast::transmute(n) }),
@@ -466,6 +485,16 @@ impl VoidPtrLike for AbstractNode<LayoutView> {
         unsafe {
             cast::transmute(*self)
         }
+    }
+}
+
+impl AbstractNode<ScriptView> {
+    pub fn wrap(&mut self, _cx: *JSContext, _scope: *JSObject, vp: *mut JSVal) -> i32 {
+        unsafe {
+            let managed: JSManaged<Node<ScriptView>> = cast::transmute(self.obj);
+            *vp = RUST_OBJECT_TO_JSVAL(managed.wrapper);
+        }
+        return 1;
     }
 }
 

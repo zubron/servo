@@ -27,7 +27,7 @@ use extra::net::url;
 macro_rules! handle_element(
     ($tag:expr, $string:expr, $type_id:expr, $ctor:ident, [ $(($field:ident : $field_init:expr)),* ]) => (
         if eq_slice($tag, $string) {
-            let _element = ~$ctor {
+            let _element = $ctor {
                 parent: Element::new($type_id, ($tag).to_str()),
                 $(
                     $field: $field_init,
@@ -203,7 +203,7 @@ fn build_element_from_tag(tag: &str) -> AbstractNode<ScriptView> {
     handle_element!(tag, "h6", HTMLHeadingElementTypeId, HTMLHeadingElement, [(level: Heading6)]);
 
     unsafe {
-        Node::as_abstract_node(~Element::new(UnknownElementTypeId, tag.to_str()))
+        Node::as_abstract_node(Element::new(UnknownElementTypeId, tag.to_str()))
     }
 }
 
@@ -239,7 +239,7 @@ pub fn parse_html(url: Url,
     let url3 = url.clone();
 
     // Build the root node.
-    let root = ~HTMLHtmlElement { parent: Element::new(HTMLHtmlElementTypeId, ~"html") };
+    let root = HTMLHtmlElement { parent: Element::new(HTMLHtmlElementTypeId, ~"html") };
     let root = unsafe { Node::as_abstract_node(root) };
     debug!("created new node");
     let mut parser = hubbub::Parser("UTF-8", false);
@@ -269,7 +269,7 @@ pub fn parse_html(url: Url,
         create_comment: |data: ~str| {
             debug!("create comment");
             unsafe {
-                Node::as_abstract_node(~Comment::new(data)).to_hubbub_node()
+                Node::as_abstract_node(Comment::new(data)).to_hubbub_node()
             }
         },
         create_doctype: |doctype: ~hubbub::Doctype| {
@@ -278,16 +278,16 @@ pub fn parse_html(url: Url,
                                 public_id: public_id,
                                 system_id: system_id,
                                 force_quirks: force_quirks } = doctype;
-            let node = ~Doctype::new(name,
-                                     public_id,
-                                     system_id,
-                                     force_quirks);
+            let node = Doctype::new(name,
+                                    public_id,
+                                    system_id,
+                                    force_quirks);
             unsafe {
                 Node::as_abstract_node(node).to_hubbub_node()
             }
         },
         create_element: |tag: ~hubbub::Tag| {
-            debug!("create element");
+            debug!("create element %s", tag.name);
             let node = build_element_from_tag(tag.name);
 
             debug!("-- attach attrs");
@@ -339,7 +339,8 @@ pub fn parse_html(url: Url,
         create_text: |data: ~str| {
             debug!("create text");
             unsafe {
-                Node::as_abstract_node(~Text::new(data)).to_hubbub_node()
+                let node = Text::new(data);
+                Node::as_abstract_node(node).to_hubbub_node()
             }
         },
         ref_node: |_| {},

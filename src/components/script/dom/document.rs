@@ -3,24 +3,30 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use dom::bindings::document;
-use dom::bindings::utils::{DOMString, WrapperCache};
+use dom::bindings::utils::{DOMString, WrapperCache, JSManaged};
 use dom::htmlcollection::HTMLCollection;
 use dom::node::{AbstractNode, ScriptView};
 use dom::window::Window;
 use script_task::global_script_context;
 
-use js::jsapi::{JS_AddObjectRoot, JS_RemoveObjectRoot};
+use js::jsapi::{JS_AddObjectRoot, JS_RemoveObjectRoot, JS_GetRuntime, JS_GC};
 use servo_util::tree::{TreeNodeRef, TreeUtils};
 
 pub struct Document {
     root: AbstractNode<ScriptView>,
     wrapper: WrapperCache,
-    window: Option<@mut Window>,
+    window: Option<JSManaged<Window>>,
 }
 
-pub fn Document(root: AbstractNode<ScriptView>, window: Option<@mut Window>) -> @mut Document {
+impl Drop for Document {
+    fn drop(&self) {
+        debug!("dropping document with wrapper 0x%x", self.wrapper.wrapper as uint)
+    }
+}
+
+pub fn Document(root: AbstractNode<ScriptView>, window: Option<JSManaged<Window>>) -> JSManaged<Document> {
     unsafe {
-        let doc = @mut Document {
+        let doc = Document {
             root: root,
             wrapper: WrapperCache::new(),
             window: window
@@ -31,13 +37,13 @@ pub fn Document(root: AbstractNode<ScriptView>, window: Option<@mut Window>) -> 
             let rootable = base.wrapper.get_rootable();
             JS_AddObjectRoot(compartment.cx.ptr, rootable);
         }
-        document::create(compartment, doc);
-        doc
+        document::create(compartment, doc)
     }
 }
 
 impl Document {
-    pub fn getElementsByTagName(&self, tag: DOMString) -> Option<@mut HTMLCollection> {
+    pub fn getElementsByTagName(&self, tag: DOMString) -> Option<JSManaged<HTMLCollection>> {
+        debug!("getElementByTagName");
         let mut elements = ~[];
         let tag = tag.to_str();
         let _ = for self.root.traverse_preorder |child| {
@@ -54,7 +60,9 @@ impl Document {
 
     pub fn content_changed(&self) {
         for self.window.iter().advance |window| {
-            window.content_changed()
+            do window.with_imm |win| {
+                win.content_changed()
+            }
         }
     }
 
@@ -66,6 +74,8 @@ impl Document {
                 let rootable = node.wrapper.get_rootable();
                 JS_RemoveObjectRoot(compartment.cx.ptr, rootable);
             }
+            let runtime = JS_GetRuntime(compartment.cx.ptr);
+            JS_GC(runtime);
         }
     }
 }

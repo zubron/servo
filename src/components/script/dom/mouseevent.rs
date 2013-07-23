@@ -3,16 +3,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use dom::bindings::codegen::MouseEventBinding;
-use dom::bindings::utils::{ErrorResult, DOMString};
-use dom::bindings::utils::{CacheableWrapper, WrapperCache, BindingObject, DerivedWrapper};
+use dom::bindings::utils::{ErrorResult, DOMString, JSManaged};
+use dom::bindings::utils::{CacheableWrapper, WrapperCache, BindingObject};
 use dom::eventtarget::EventTarget;
 use dom::uievent::UIEvent;
 use dom::window::Window;
 use dom::windowproxy::WindowProxy;
 use script_task::{global_script_context};
 
-use js::glue::RUST_OBJECT_TO_JSVAL;
-use js::jsapi::{JSObject, JSContext, JSVal};
+use js::jsapi::{JSObject, JSContext};
 
 pub struct MouseEvent {
     parent: UIEvent,
@@ -25,15 +24,16 @@ pub struct MouseEvent {
     alt_key: bool,
     meta_key: bool,
     button: u16,
-    related_target: Option<@mut EventTarget>
+    related_target: Option<JSManaged<EventTarget>>
 }
 
 impl MouseEvent {
     pub fn new(type_: DOMString, can_bubble: bool, cancelable: bool,
-               view: Option<@mut WindowProxy>, detail: i32, screen_x: i32,
+               view: &Option<JSManaged<WindowProxy>>, detail: i32, screen_x: i32,
                screen_y: i32, client_x: i32, client_y: i32, ctrl_key: bool,
                shift_key: bool, alt_key: bool, meta_key: bool, button: u16,
-               _buttons: u16, related_target: Option<@mut EventTarget>) -> MouseEvent {
+               _buttons: u16, related_target: &Option<JSManaged<EventTarget>>)
+        -> MouseEvent {
         MouseEvent {
             parent: UIEvent::new(type_, can_bubble, cancelable, view, detail),
             screen_x: screen_x,
@@ -45,27 +45,20 @@ impl MouseEvent {
             alt_key: alt_key,
             meta_key: meta_key,
             button: button,
-            related_target: related_target
+            related_target: related_target.clone()
         }
     }
 
-    pub fn init_wrapper(@mut self) {
-        let script_context = global_script_context();
-        let cx = script_context.js_compartment.cx.ptr;
-        let owner = script_context.root_frame.get_ref().window;
-        let cache = owner.get_wrappercache();
-        let scope = cache.get_wrapper();
-        self.wrap_object_shared(cx, scope);
-    }
-
-    pub fn Constructor(_owner: @mut Window,
+    pub fn Constructor(_owner: &JSManaged<Window>,
                        type_: DOMString,
                        init: &MouseEventBinding::MouseEventInit,
-                       _rv: &mut ErrorResult) -> @mut MouseEvent {
-        @mut MouseEvent::new(type_, init.bubbles, init.cancelable, init.view, init.detail,
-                             init.screenX, init.screenY, init.clientX, init.clientY,
-                             init.ctrlKey, init.shiftKey, init.altKey, init.metaKey,
-                             init.button, init.buttons, init.relatedTarget)
+                       _rv: &mut ErrorResult) -> JSManaged<MouseEvent> {
+        let ev = MouseEvent::new(type_, init.bubbles, init.cancelable, &init.view,
+                                 init.detail, init.screenX, init.screenY, init.clientX,
+                                 init.clientY, init.ctrlKey, init.shiftKey, init.altKey,
+                                 init.metaKey, init.button, init.buttons,
+                                 &init.relatedTarget);
+        JSManaged::new(ev)
     }
 
     pub fn ScreenX(&self) -> i32 {
@@ -109,7 +102,7 @@ impl MouseEvent {
         0
     }
 
-    pub fn GetRelatedTarget(&self) -> Option<@mut EventTarget> {
+    pub fn GetRelatedTarget(&self) -> Option<JSManaged<EventTarget>> {
         self.related_target
     }
 
@@ -122,7 +115,7 @@ impl MouseEvent {
                           typeArg: DOMString,
                           canBubbleArg: bool,
                           cancelableArg: bool,
-                          viewArg: Option<@mut WindowProxy>,
+                          viewArg: &Option<JSManaged<WindowProxy>>,
                           detailArg: i32,
                           screenXArg: i32,
                           screenYArg: i32,
@@ -133,7 +126,7 @@ impl MouseEvent {
                           shiftKeyArg: bool,
                           metaKeyArg: bool,
                           buttonArg: u16,
-                          relatedTargetArg: Option<@mut EventTarget>,
+                          relatedTargetArg: &Option<JSManaged<EventTarget>>,
                           _rv: &mut ErrorResult) {
         self.parent.InitUIEvent(typeArg, canBubbleArg, cancelableArg, viewArg, detailArg);
         self.screen_x = screenXArg;
@@ -145,7 +138,7 @@ impl MouseEvent {
         self.shift_key = shiftKeyArg;
         self.meta_key = metaKeyArg;
         self.button = buttonArg;
-        self.related_target = relatedTargetArg;
+        self.related_target = relatedTargetArg.clone();
     }
 }
 
@@ -154,31 +147,21 @@ impl CacheableWrapper for MouseEvent {
         return self.parent.get_wrappercache()
     }
 
-    fn wrap_object_shared(@mut self, cx: *JSContext, scope: *JSObject) -> *JSObject {
+    fn wrap_object_shared(self, cx: *JSContext, scope: *JSObject) -> *JSObject {
         let mut unused = false;
         MouseEventBinding::Wrap(cx, scope, self, &mut unused)
+    }
+
+    pub fn init_wrapper(self) -> *JSObject {
+        let script_context = global_script_context();
+        let cx = script_context.js_compartment.cx.ptr;
+        let owner = script_context.root_frame.get_ref().window;
+        self.wrap_object_shared(cx, owner.wrapper)
     }
 }
 
 impl BindingObject for MouseEvent {
-    fn GetParentObject(&self, cx: *JSContext) -> @mut CacheableWrapper {
+    fn GetParentObject(&self, cx: *JSContext) -> *JSObject {
         self.parent.GetParentObject(cx)
     }
-}
-
-impl DerivedWrapper for MouseEvent {
-    fn wrap(&mut self, _cx: *JSContext, _scope: *JSObject, _vp: *mut JSVal) -> i32 {
-        fail!(~"nyi")
-    }
-
-    fn wrap_shared(@mut self, cx: *JSContext, scope: *JSObject, vp: *mut JSVal) -> i32 {
-        let obj = self.wrap_object_shared(cx, scope);
-        if obj.is_null() {
-            return 0;
-        } else {
-            unsafe { *vp = RUST_OBJECT_TO_JSVAL(obj) };
-            return 1;
-        }
-    }
-
 }

@@ -5,13 +5,12 @@
 use dom::eventtarget::EventTarget;
 use dom::window::Window;
 use dom::bindings::codegen::EventBinding;
-use dom::bindings::utils::{CacheableWrapper, BindingObject, DerivedWrapper};
-use dom::bindings::utils::{DOMString, ErrorResult, WrapperCache};
+use dom::bindings::utils::{CacheableWrapper, BindingObject};
+use dom::bindings::utils::{DOMString, ErrorResult, WrapperCache, JSManaged};
 use script_task::{task_from_context, global_script_context};
 
 use geom::point::Point2D;
-use js::glue::RUST_OBJECT_TO_JSVAL;
-use js::jsapi::{JSObject, JSContext, JSVal};
+use js::jsapi::{JSObject, JSContext};
 
 use std::cast;
 
@@ -45,15 +44,6 @@ impl Event_ {
         }
     }
 
-    pub fn init_wrapper(@mut self) {
-        let script_context = global_script_context();
-        let cx = script_context.js_compartment.cx.ptr;
-        let owner = script_context.root_frame.get_ref().window;
-        let cache = owner.get_wrappercache();
-        let scope = cache.get_wrapper();
-        self.wrap_object_shared(cx, scope);
-    }
-
     pub fn EventPhase(&self) -> u16 {
         0
     }
@@ -62,11 +52,11 @@ impl Event_ {
         copy self.type_
     }
 
-    pub fn GetTarget(&self) -> Option<@mut EventTarget> {
+    pub fn GetTarget(&self) -> Option<JSManaged<EventTarget>> {
         None
     }
 
-    pub fn GetCurrentTarget(&self) -> Option<@mut EventTarget> {
+    pub fn GetCurrentTarget(&self) -> Option<JSManaged<EventTarget>> {
         None
     }
 
@@ -110,11 +100,12 @@ impl Event_ {
         self.trusted
     }
 
-    pub fn Constructor(_global: @mut Window,
+    pub fn Constructor(_global: &JSManaged<Window>,
                    type_: DOMString,
                    _init: &EventBinding::EventInit,
-                   _rv: &mut ErrorResult) -> @mut Event_ {
-        @mut Event_::new(type_)
+                   _rv: &mut ErrorResult) -> JSManaged<Event_> {
+        let ev = Event_::new(type_);
+        JSManaged::new(ev)
     }
 }
 
@@ -123,33 +114,24 @@ impl CacheableWrapper for Event_ {
         unsafe { cast::transmute(&self.wrapper) }
     }
 
-    fn wrap_object_shared(@mut self, cx: *JSContext, scope: *JSObject) -> *JSObject {
+    fn wrap_object_shared(self, cx: *JSContext, scope: *JSObject) -> *JSObject {
         let mut unused = false;
         EventBinding::Wrap(cx, scope, self, &mut unused)
+    }
+
+    pub fn init_wrapper(self) -> *JSObject {
+        let script_context = global_script_context();
+        let cx = script_context.js_compartment.cx.ptr;
+        let owner = script_context.root_frame.get_ref().window;
+        self.wrap_object_shared(cx, owner.wrapper)
     }
 }
 
 impl BindingObject for Event_ {
-    fn GetParentObject(&self, cx: *JSContext) -> @mut CacheableWrapper {
+    fn GetParentObject(&self, cx: *JSContext) -> *JSObject {
         let script_context = task_from_context(cx);
         unsafe {
-            (*script_context).root_frame.get_ref().window as @mut CacheableWrapper
-        }
-    }
-}
-
-impl DerivedWrapper for Event_ {
-    fn wrap(&mut self, _cx: *JSContext, _scope: *JSObject, _vp: *mut JSVal) -> i32 {
-        fail!(~"nyi")
-    }
-
-    fn wrap_shared(@mut self, cx: *JSContext, scope: *JSObject, vp: *mut JSVal) -> i32 {
-        let obj = self.wrap_object_shared(cx, scope);
-        if obj.is_null() {
-            return 0;
-        } else {
-            unsafe { *vp = RUST_OBJECT_TO_JSVAL(obj) };
-            return 1;
+            (*script_context).root_frame.get_ref().window.wrapper
         }
     }
 }

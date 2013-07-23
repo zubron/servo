@@ -7,7 +7,7 @@
 
 use servo_msg::compositor_msg::{ScriptListener, Loading, PerformingLayout};
 use servo_msg::compositor_msg::FinishedLoading;
-use dom::bindings::utils::GlobalStaticData;
+use dom::bindings::utils::{GlobalStaticData, JSManaged};
 use dom::document::Document;
 use dom::element::Element;
 use dom::event::{Event, ResizeEvent, ReflowEvent, ClickEvent, MouseDownEvent, MouseUpEvent};
@@ -88,8 +88,8 @@ impl ScriptChan {
 
 /// Information for one frame in the browsing context.
 pub struct Frame {
-    document: @mut Document,
-    window: @mut Window,
+    document: JSManaged<Document>,
+    window: JSManaged<Window>,
     url: Url,
 }
 
@@ -162,15 +162,6 @@ pub fn global_script_context() -> @ScriptTask {
 pub fn task_from_context(js_context: *JSContext) -> *mut ScriptTask {
     unsafe {
         JS_GetContextPrivate(js_context) as *mut ScriptTask
-    }
-}
-
-#[unsafe_destructor]
-impl Drop for ScriptTask {
-    fn drop(&self) {
-        unsafe {
-            let _ = local_data::local_data_pop(global_script_context_key);
-        }
     }
 }
 
@@ -347,10 +338,16 @@ impl ScriptTask {
     fn handle_exit_msg(&mut self) {
         self.join_layout();
         for self.root_frame.iter().advance |frame| {
-            frame.document.teardown();
+            do frame.document.with_mut |doc| {
+                doc.teardown();
+            }
         }
 
-        self.layout_chan.send(layout_interface::ExitMsg)
+        self.layout_chan.send(layout_interface::ExitMsg);
+
+        unsafe {
+            let _ = local_data::local_data_pop(global_script_context_key);
+        }
     }
 
     /// The entry point to document loading. Defines bindings, sets up the window and document
@@ -398,7 +395,7 @@ impl ScriptTask {
 
         // Tie the root into the document.
         do root_node.with_mut_base |base| {
-            base.add_to_doc(document)
+            base.add_to_doc(&document)
         }
 
         // Create the root frame.
@@ -470,8 +467,11 @@ impl ScriptTask {
             None => fail!(~"Tried to relayout with no root frame!"),
             Some(ref root_frame) => {
                 // Send new document and relevant styles to layout.
+                let root = do root_frame.document.with_imm |doc| {
+                    doc.root
+                };
                 let reflow = ~Reflow {
-                    document_root: root_frame.document.root,
+                    document_root: root,
                     url: copy root_frame.url,
                     goal: goal,
                     window_size: self.window_size,
@@ -492,9 +492,11 @@ impl ScriptTask {
     /// FIXME: This should basically never be used.
     pub fn reflow_all(&mut self, goal: ReflowGoal) {
         for self.root_frame.iter().advance |root_frame| {
-            ScriptTask::damage(&mut self.damage,
-                                  root_frame.document.root,
-                                  MatchSelectorsDocumentDamage)
+            do root_frame.document.with_imm |doc| {
+                ScriptTask::damage(&mut self.damage,
+                                   doc.root,
+                                   MatchSelectorsDocumentDamage)
+            }
         }
 
         self.reflow(goal)
@@ -538,9 +540,11 @@ impl ScriptTask {
                 self.window_size = Size2D(new_width, new_height);
 
                 for self.root_frame.iter().advance |root_frame| {
-                    ScriptTask::damage(&mut self.damage,
-                                          root_frame.document.root,
-                                          ReflowDocumentDamage);
+                    do root_frame.document.with_imm |doc| {
+                        ScriptTask::damage(&mut self.damage,
+                                           doc.root,
+                                           ReflowDocumentDamage);
+                    }
                 }
 
                 if self.root_frame.is_some() {
@@ -553,9 +557,11 @@ impl ScriptTask {
                 debug!("script got reflow event");
 
                 for self.root_frame.iter().advance |root_frame| {
-                    ScriptTask::damage(&mut self.damage,
-                                          root_frame.document.root,
-                                          MatchSelectorsDocumentDamage);
+                    do root_frame.document.with_imm |doc| {
+                        ScriptTask::damage(&mut self.damage,
+                                           doc.root,
+                                           MatchSelectorsDocumentDamage);
+                    }
                 }
 
                 if self.root_frame.is_some() {
@@ -566,7 +572,7 @@ impl ScriptTask {
             ClickEvent(_button, point) => {
                 debug!("ClickEvent: clicked at %?", point);
                 let root = match self.root_frame {
-                    Some(ref frame) => frame.document.root,
+                    Some(ref frame) => do frame.document.with_imm |doc| { doc.root },
                     None => fail!("root frame is None")
                 };
                 let (port, chan) = comm::stream();

@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::bindings::utils::WrapperCache;
+use dom::bindings::utils::{WrapperCache, JSManaged};
 use dom::bindings::window;
 
 use layout_interface::ReflowForScriptQuery;
@@ -94,9 +94,9 @@ impl Window {
     }
 
     pub fn new(script_chan: ScriptChan, script_task: *mut ScriptTask)
-               -> @mut Window {
+               -> JSManaged<Window> {
         let script_chan_clone = script_chan.clone();
-        let win = @mut Window {
+        let win = Window {
             wrapper: WrapperCache::new(),
             script_chan: script_chan,
             timer_chan: {
@@ -117,9 +117,8 @@ impl Window {
 
         unsafe {
             let compartment = (*script_task).js_compartment;
-            window::create(compartment, win);
+            window::create(compartment, win)
         }
-        win
     }
 }
 

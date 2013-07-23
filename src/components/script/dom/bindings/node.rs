@@ -5,7 +5,7 @@
 use dom::bindings::element;
 use dom::bindings::text;
 use dom::bindings::utils;
-use dom::bindings::utils::{CacheableWrapper, WrapperCache, DerivedWrapper};
+use dom::bindings::utils::{CacheableWrapper, WrapperCache, JSManaged};
 use dom::node::{AbstractNode, Node, ElementNodeTypeId, TextNodeTypeId, CommentNodeTypeId};
 use dom::node::{DoctypeNodeTypeId, ScriptView};
 
@@ -23,6 +23,8 @@ use js::{JS_THIS_OBJECT, JSPROP_NATIVE_ACCESSORS};
 use servo_util::tree::TreeNodeRef;
 
 pub fn init(compartment: @mut Compartment) {
+    JSManaged::sanity_check::<Node<ScriptView>>();
+
     let obj = utils::define_empty_prototype(~"Node", None, compartment);
 
     let attrs = @~[
@@ -61,9 +63,24 @@ pub fn init(compartment: @mut Compartment) {
     }
 }
 
+pub trait NodeBase<View> {
+    pub fn base_node(&self) -> &Node<View>;
+    pub fn base_node_mut(&mut self) -> &mut Node<View>;
+}
+
+impl<View> NodeBase<View> for Node<View> {
+    pub fn base_node(&self) -> &Node<View> {
+        unsafe { cast::transmute(self) }
+    }
+
+    pub fn base_node_mut(&mut self) -> &mut Node<View> {
+        unsafe { cast::transmute(self) }
+    }
+}
+
 #[allow(non_implicitly_copyable_typarams)]
-pub fn create(cx: *JSContext, node: &mut AbstractNode<ScriptView>) -> jsobj {
-    match node.type_id() {
+pub fn create<T: NodeBase<ScriptView>>(cx: *JSContext, node: T) -> jsobj {
+    match node.base_node().type_id {
         ElementNodeTypeId(_) => element::create(cx, node),
         TextNodeTypeId |
         CommentNodeTypeId |
@@ -71,9 +88,10 @@ pub fn create(cx: *JSContext, node: &mut AbstractNode<ScriptView>) -> jsobj {
      }
 }
 
-pub unsafe fn unwrap(obj: *JSObject) -> AbstractNode<ScriptView> {
-    let raw = utils::unwrap::<*mut Node<ScriptView>>(obj);
-    AbstractNode::from_raw(raw)
+pub fn to_abstract_node(obj: *JSObject) -> AbstractNode<ScriptView> {
+    unsafe {
+        AbstractNode::from_raw(cast::transmute(obj as *Node<ScriptView>))
+    }
 }
 
 #[allow(non_implicitly_copyable_typarams)]
@@ -84,7 +102,7 @@ extern fn getFirstChild(cx: *JSContext, _argc: c_uint, vp: *mut JSVal) -> JSBool
             return 0;
         }
 
-        let node = unwrap(obj);
+        let node = to_abstract_node(obj);
         let rval = do node.with_mut_base |base| {
             base.getFirstChild()
         };
@@ -106,7 +124,7 @@ extern fn getNextSibling(cx: *JSContext, _argc: c_uint, vp: *mut JSVal) -> JSBoo
             return 0;
         }
 
-        let node = unwrap(obj);
+        let node = to_abstract_node(obj);
         let rval = do node.with_mut_base |base| {
             base.getNextSibling()
         };
@@ -127,7 +145,7 @@ extern fn getNodeType(cx: *JSContext, _argc: c_uint, vp: *mut JSVal) -> JSBool {
             return 0;
         }
 
-        let node = unwrap(obj);
+        let node = to_abstract_node(obj);
         let rval = do node.with_base |base| {
             base.getNodeType()
         };
@@ -145,7 +163,29 @@ impl CacheableWrapper for AbstractNode<ScriptView> {
         }
     }
 
-    fn wrap_object_shared(@mut self, _cx: *JSContext, _scope: *JSObject) -> *JSObject {
+    fn wrap_object_shared(self, _cx: *JSContext, _scope: *JSObject) -> *JSObject {
         fail!(~"need to implement wrapping");
     }
+
+    fn init_wrapper(self) -> *JSObject {
+        //XXXjdm
+        ptr::null()
+    }
+}
+
+impl<View> CacheableWrapper for Node<View> {
+    fn get_wrappercache(&mut self) -> &mut WrapperCache {
+        unsafe {
+            cast::transmute(&self.wrapper)
+        }
+    }
+
+    fn wrap_object_shared(self, _cx: *JSContext, _scope: *JSObject) -> *JSObject {
+        fail!(~"need to implement wrapping");
+    }
+
+    fn init_wrapper(self) -> *JSObject {
+        //XXXjdm
+        ptr::null()
+   }
 }

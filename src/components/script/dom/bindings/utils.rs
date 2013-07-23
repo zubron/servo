@@ -3,8 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use dom::bindings::codegen::PrototypeList;
-use dom::bindings::node;
-use dom::node::{AbstractNode, ScriptView};
 use script_task::task_from_context;
 
 use std::cast;
@@ -14,8 +12,8 @@ use std::ptr;
 use std::ptr::{null, to_unsafe_ptr};
 use std::result;
 use std::str;
+use std::sys;
 use std::uint;
-use std::unstable::intrinsics;
 use js::glue::*;
 use js::glue::{DefineFunctionWithReserved, GetObjectJSClass, RUST_OBJECT_TO_JSVAL};
 use js::glue::{js_IsObjectProxyClass, js_IsFunctionProxyClass, IsProxyHandlerFamily};
@@ -91,6 +89,7 @@ extern fn InterfaceObjectToString(cx: *JSContext, _argc: uint, vp: *mut JSVal) -
   }
 }
 
+#[deriving(Clone)]
 pub enum DOMString {
     str(~str),
     null_string
@@ -105,17 +104,74 @@ impl DOMString {
     }
 }
 
-pub struct rust_box<T> {
-    rc: uint,
-    td: *intrinsics::TyDesc,
-    next: *(),
-    prev: *(),
-    payload: T
+pub struct JSManaged<T> {
+    //XXXjdm Needs rooting
+    wrapper: *JSObject
+}
+
+impl<T> JSManaged<T> {
+    fn sanity_check_impl(available: u32) {
+        debug!("%u vs %u", sys::size_of::<T>(), available as uint * sys::size_of::<JSVal>());
+        assert!(sys::size_of::<T>() <= available as uint * sys::size_of::<JSVal>());
+    }
+
+    pub fn sanity_check() {
+        JSManaged::sanity_check_impl::<T>(MAX_FIXED_SLOTS - DOM_OBJECT_SLOT);
+    }
+
+    pub fn sanity_check_proxy() {
+        JSManaged::sanity_check_impl::<T>(MAX_FIXED_SLOTS - DOM_PROXY_OBJECT_SLOT);
+    }
+}
+
+impl<T> Clone for JSManaged<T> {
+    fn clone(&self) -> JSManaged<T> {
+        JSManaged {
+            wrapper: self.wrapper
+        }
+    }
+}
+
+impl<T: CacheableWrapper> JSManaged<T> {
+    pub fn new(mut wrapped: T) -> JSManaged<T> {
+        let cache: *mut WrapperCache = wrapped.get_wrappercache();
+        let mut wrapper = unsafe { (*cache).get_wrapper() };
+        if wrapper.is_null() {
+            wrapper = wrapped.init_wrapper();
+        }
+        assert!(wrapper != ptr::null());
+        JSManaged {
+            wrapper: wrapper
+        }
+    }
+
+    pub fn from_raw(wrapper: *JSObject) -> JSManaged<T> {
+        assert!(wrapper != ptr::null());
+        JSManaged {
+            wrapper: wrapper
+        }
+    }
+
+    pub fn with_imm<R>(&self, cb: &fn(obj: &T) -> R) -> R {
+        unsafe {
+            assert!(self.wrapper != ptr::null());
+            let inner = unwrap::<&T>(self.wrapper);
+            cb(inner)
+        }
+    }
+
+    pub fn with_mut<R>(&self, cb: &fn(obj: &mut T) -> R) -> R {
+        unsafe {
+            assert!(self.wrapper != ptr::null());
+            let inner = unwrap::<&mut T>(self.wrapper);
+            cb(inner)
+        }
+    }
 }
 
 fn is_dom_class(clasp: *JSClass) -> bool {
     unsafe {
-        ((*clasp).flags & js::JSCLASS_IS_DOMJSCLASS) != 0
+        ((*clasp).flags & js::JSCLASS_IS_INLINE_DOMJSCLASS) != 0
     }
 }
 
@@ -127,6 +183,7 @@ fn is_dom_proxy(obj: *JSObject) -> bool {
 }
 
 pub unsafe fn unwrap<T>(obj: *JSObject) -> T {
+    debug!("unwrapping 0x%x", obj as uint);
     let clasp = JS_GetClass(obj);
     let slot = if is_dom_class(clasp) {
         DOM_OBJECT_SLOT
@@ -134,8 +191,9 @@ pub unsafe fn unwrap<T>(obj: *JSObject) -> T {
         assert!(is_dom_proxy(obj));
         DOM_PROXY_OBJECT_SLOT
     } as u32;
-    let val = JS_GetReservedSlot(obj, slot);
-    cast::transmute(RUST_JSVAL_TO_PRIVATE(val))
+    let val: *T = GetInlineStorage(obj, slot) as *T;
+    debug!("storage at 0x%x", ptr::to_unsafe_ptr(&*val) as uint);
+    cast::transmute(val)
 }
 
 pub unsafe fn get_dom_class(obj: *JSObject) -> Result<DOMClass, ()> {
@@ -154,31 +212,18 @@ pub unsafe fn get_dom_class(obj: *JSObject) -> Result<DOMClass, ()> {
     return Err(());
 }
 
-pub fn unwrap_object<T>(obj: *JSObject, proto_id: PrototypeList::id::ID, proto_depth: uint) -> Result<T, ()> {
-    unsafe {
+pub fn can_unwrap_object(obj: *JSObject, proto_id: PrototypeList::id::ID, proto_depth: uint) -> Result<(), ()> {
+   unsafe {
         do get_dom_class(obj).chain |dom_class| {
             if dom_class.interface_chain[proto_depth] == proto_id {
                 debug!("good prototype");
-                Ok(unwrap(obj))
+                Ok(())
             } else {
                 debug!("bad prototype");
                 Err(())
             }
         }
     }
-}
-
-pub fn unwrap_value<T>(val: *JSVal, proto_id: PrototypeList::id::ID, proto_depth: uint) -> Result<T, ()> {
-    unsafe {
-        let obj = RUST_JSVAL_TO_OBJECT(*val);
-        unwrap_object(obj, proto_id, proto_depth)
-    }
-}
-
-pub unsafe fn squirrel_away<T>(x: @mut T) -> *rust_box<T> {
-    let y: *rust_box<T> = cast::transmute(x);
-    cast::forget(x);
-    y
 }
 
 //XXX very incomplete
@@ -280,7 +325,7 @@ pub fn instance_jsclass(name: ~str, finalize: *u8, trace: *u8)
         unsafe {
             JSClass {
                 name: compartment.add_name(copy name),
-                flags: JSCLASS_HAS_RESERVED_SLOTS(1) | js::JSCLASS_IS_DOMJSCLASS,
+                flags: JSCLASS_HAS_RESERVED_SLOTS(16) | js::JSCLASS_IS_INLINE_DOMJSCLASS,
                 addProperty: GetJSClassHookStubPointer(PROPERTY_STUB) as *u8,
                 delProperty: GetJSClassHookStubPointer(PROPERTY_STUB) as *u8,
                 getProperty: GetJSClassHookStubPointer(PROPERTY_STUB) as *u8,
@@ -334,8 +379,9 @@ pub fn define_empty_prototype(name: ~str, proto: Option<~str>, compartment: @mut
 
 // We use slot 0 for holding the raw object.  This is safe for both
 // globals and non-globals.
-pub static DOM_OBJECT_SLOT: uint = 0;
-static DOM_PROXY_OBJECT_SLOT: uint = js::JSSLOT_PROXY_PRIVATE as uint;
+pub static DOM_OBJECT_SLOT: u32 = 0;
+pub static DOM_PROXY_OBJECT_SLOT: u32 = 3;
+pub static MAX_FIXED_SLOTS: u32 = 16;
 
 // NOTE: This is baked into the Ion JIT as 0 in codegen for LGetDOMProperty and
 // LSetDOMProperty. Those constants need to be changed accordingly if this value
@@ -415,7 +461,11 @@ pub struct DOMJSClass {
 pub fn GetProtoOrIfaceArray(global: *JSObject) -> **JSObject {
     unsafe {
         /*assert ((*JS_GetClass(global)).flags & JSCLASS_DOM_GLOBAL) != 0;*/
-        cast::transmute(RUST_JSVAL_TO_PRIVATE(JS_GetReservedSlot(global, DOM_PROTOTYPE_SLOT)))
+        let raw = RUST_JSVAL_TO_PRIVATE(JS_GetReservedSlot(global, DOM_PROTOTYPE_SLOT));
+        let boxed: @mut [*JSObject, ..1] = cast::transmute(raw);
+        let retVal = ptr::to_unsafe_ptr(&boxed[0]);
+        cast::forget(boxed);
+        retVal
     }
 }
 
@@ -616,20 +666,18 @@ pub extern fn ThrowingConstructor(_cx: *JSContext, _argc: uint, _vp: *JSVal) -> 
 }
 
 pub fn initialize_global(global: *JSObject) {
-    let protoArray = @mut ([0 as *JSObject, ..21]); //XXXjdm PrototyepList::id::_ID_Count
+    let protoArray = @mut ([0 as *JSObject, ..22]); //XXXjdm PrototyepList::id::_ID_Count
     unsafe {
-        //XXXjdm we should be storing the box pointer instead of the inner
-        let box = squirrel_away(protoArray);
-        let inner = ptr::to_unsafe_ptr(&(*box).payload);
         JS_SetReservedSlot(global,
                            DOM_PROTOTYPE_SLOT,
-                           RUST_PRIVATE_TO_JSVAL(inner as *libc::c_void));
+                           RUST_PRIVATE_TO_JSVAL(cast::transmute(protoArray)));
     }
 }
 
 pub trait CacheableWrapper {
     fn get_wrappercache(&mut self) -> &mut WrapperCache;
-    fn wrap_object_shared(@mut self, cx: *JSContext, scope: *JSObject) -> *JSObject;
+    fn wrap_object_shared(self, cx: *JSContext, scope: *JSObject) -> *JSObject;
+    fn init_wrapper(self) -> *JSObject;
 }
 
 pub struct WrapperCache {
@@ -656,42 +704,18 @@ impl WrapperCache {
     }
 }
 
-pub fn WrapNewBindingObject(cx: *JSContext, scope: *JSObject,
-                            mut value: @mut CacheableWrapper,
+pub fn WrapNewBindingObject(cx: *JSContext, _scope: *JSObject,
+                            obj: *JSObject,
                             vp: *mut JSVal) -> bool {
   unsafe {
-    let cache = value.get_wrappercache();
-    let obj = cache.get_wrapper();
-    if obj.is_not_null() /*&& js::GetObjectCompartment(obj) == js::GetObjectCompartment(scope)*/ {
-        *vp = RUST_OBJECT_TO_JSVAL(obj);
-        return true;
-    }
-
-    let obj = value.wrap_object_shared(cx, scope);
-    if obj.is_null() {
-        return false;
-    }
-
-    //  MOZ_ASSERT(js::IsObjectInContextCompartment(scope, cx));
-      cache.set_wrapper(obj);
+    assert!(!obj.is_null());
     *vp = RUST_OBJECT_TO_JSVAL(obj);
     return JS_WrapValue(cx, cast::transmute(vp)) != 0;
   }
 }
 
-pub fn WrapNativeParent(cx: *JSContext, scope: *JSObject, mut p: @mut CacheableWrapper) -> *JSObject {
-    let cache = p.get_wrappercache();
-    let wrapper = cache.get_wrapper();
-    if wrapper.is_not_null() {
-        return wrapper;
-    }
-    let wrapper = p.wrap_object_shared(cx, scope);
-    cache.set_wrapper(wrapper);
-    wrapper
-}
-
 pub trait BindingObject {
-    fn GetParentObject(&self, cx: *JSContext) -> @mut CacheableWrapper;
+    fn GetParentObject(&self, cx: *JSContext) -> *JSObject;
 }
 
 pub fn GetPropertyOnPrototype(cx: *JSContext, proxy: *JSObject, id: jsid, found: *mut bool,
@@ -815,28 +839,6 @@ pub fn InitIds(cx: *JSContext, specs: &[JSPropertySpec], ids: &mut [jsid]) -> bo
         }
     }
     rval
-}
-
-pub trait DerivedWrapper {
-    fn wrap(&mut self, cx: *JSContext, scope: *JSObject, vp: *mut JSVal) -> i32;
-    fn wrap_shared(@mut self, cx: *JSContext, scope: *JSObject, vp: *mut JSVal) -> i32;
-}
-
-impl DerivedWrapper for AbstractNode<ScriptView> {
-    fn wrap(&mut self, cx: *JSContext, _scope: *JSObject, vp: *mut JSVal) -> i32 {
-        let cache = self.get_wrappercache();
-        let wrapper = cache.get_wrapper();
-        if wrapper.is_not_null() {
-            unsafe { *vp = RUST_OBJECT_TO_JSVAL(wrapper) };
-            return 1;
-        }
-        unsafe { *vp = RUST_OBJECT_TO_JSVAL(node::create(cx, self).ptr) };
-        return 1;
-    }
-
-    fn wrap_shared(@mut self, _cx: *JSContext, _scope: *JSObject, _vp: *mut JSVal) -> i32 {
-        fail!(~"nyi")
-    }
 }
 
 pub enum Error {

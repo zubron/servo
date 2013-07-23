@@ -3,25 +3,23 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use std::cast;
-use std::libc;
 use std::ptr;
 use std::result;
-use dom::bindings::utils::{DOMString, rust_box, squirrel_away, str};
-use dom::bindings::utils::{WrapperCache, DerivedWrapper};
+use std::unstable::intrinsics;
+use dom::bindings::utils::{DOMString, str, DOM_OBJECT_SLOT, unwrap};
+use dom::bindings::utils::{WrapperCache, JSManaged};
 use dom::bindings::utils::{jsval_to_str, WrapNewBindingObject, CacheableWrapper};
 use dom::bindings::utils;
 use dom::document::Document;
 use dom::htmlcollection::HTMLCollection;
 use js::glue::*;
 use js::glue::{PROPERTY_STUB, STRICT_PROPERTY_STUB};
-use js::jsapi::{JS_DefineProperties};
-use js::jsapi::{JS_GetReservedSlot, JS_SetReservedSlot, JS_DefineFunctions};
+use js::jsapi::{JS_DefineProperties, JS_DefineFunctions};
 use js::jsapi::{JSContext, JSVal, JSObject, JSBool, JSFreeOp, JSPropertySpec, JSPropertyOpWrapper};
 use js::jsapi::{JSStrictPropertyOpWrapper, JSNativeWrapper, JSFunctionSpec};
 use js::rust::{Compartment, jsobj};
 use js::{JSPROP_NATIVE_ACCESSORS};
 use js::{JS_ARGV, JSPROP_ENUMERATE, JSPROP_SHARED, JSVAL_NULL, JS_THIS_OBJECT, JS_SET_RVAL};
-use script_task::task_from_context;
 
 use std::libc::c_uint;
 use std::ptr::null;
@@ -33,10 +31,12 @@ extern fn getDocumentElement(cx: *JSContext, _argc: c_uint, vp: *mut JSVal) -> J
             return 0;
         }
 
-        let doc = &mut (*unwrap(obj)).payload;
-        let root = &mut doc.root;
-        assert!(root.is_element());
-        root.wrap(cx, ptr::null(), vp); //XXXjdm proper scope at some point
+        let wrapper = JSManaged::from_raw::<Document>(obj);
+        do wrapper.with_mut |doc| {
+            let root = &mut doc.root;
+            assert!(root.is_element());
+            root.wrap(cx, ptr::null(), vp); //XXXjdm proper scope at some point
+        }
         return 1;
     }
 }
@@ -54,37 +54,32 @@ extern fn getElementsByTagName(cx: *JSContext, _argc: c_uint, vp: *JSVal) -> JSB
         }
         arg0 = str(strval.get());
 
-        let doc = &mut (*unwrap(obj)).payload;
-        let rval: Option<@mut HTMLCollection>;
-        rval = doc.getElementsByTagName(arg0);
+        let doc = JSManaged::from_raw::<Document>(obj);
+        let rval: Option<JSManaged<HTMLCollection>>;
+        rval = do doc.with_imm |doc| { doc.getElementsByTagName(arg0.clone()) };
         if rval.is_none() {
             JS_SET_RVAL(cx, vp, JSVAL_NULL);
         } else {
-            let cache = doc.get_wrappercache();
-            let rval = rval.get() as @mut CacheableWrapper;
-            assert!(WrapNewBindingObject(cx, cache.get_wrapper(),
-                                         rval,
+            let rval = rval.get().wrapper;
+            assert!(WrapNewBindingObject(cx, obj, rval,
                                          cast::transmute(vp)));
         }
         return 1;
     }
 }
 
-unsafe fn unwrap(obj: *JSObject) -> *mut rust_box<Document> {
-    //TODO: some kind of check if this is a Document object
-    let val = JS_GetReservedSlot(obj, 0);
-    RUST_JSVAL_TO_PRIVATE(val) as *mut rust_box<Document>
-}
-
 extern fn finalize(_fop: *JSFreeOp, obj: *JSObject) {
-    debug!("document finalize!");
+    debug!("document finalize (0x%x)!", obj as uint);
     unsafe {
-        let val = JS_GetReservedSlot(obj, 0);
-        let _doc: @Document = cast::transmute(RUST_JSVAL_TO_PRIVATE(val));
+        let orig_doc = unwrap::<*mut Document>(obj);
+        let doc = intrinsics::uninit();
+        intrinsics::move_val(&mut *orig_doc, doc);
     }
 }
 
 pub fn init(compartment: @mut Compartment) {
+    JSManaged::sanity_check::<Document>();
+
     let obj = utils::define_empty_prototype(~"Document", None, compartment);
 
     let attrs = @~[
@@ -128,23 +123,23 @@ pub fn init(compartment: @mut Compartment) {
                                                        ptr::null()));
 }
 
-pub fn create(compartment: @mut Compartment, doc: @mut Document) -> *JSObject {
+pub fn create(compartment: @mut Compartment, mut doc: Document) -> JSManaged<Document> {
     let instance : jsobj = result::unwrap(
         compartment.new_object_with_proto(~"DocumentInstance", ~"Document",
                                           compartment.global_obj.ptr));
     doc.wrapper.set_wrapper(instance.ptr);
 
     unsafe {
-        let raw_ptr: *libc::c_void = cast::transmute(squirrel_away(doc));
-        JS_SetReservedSlot(instance.ptr, 0, RUST_PRIVATE_TO_JSVAL(raw_ptr));
+        let raw_storage: *mut Document = GetInlineStorage(instance.ptr, DOM_OBJECT_SLOT) as *mut Document;
+        let storage: &mut Document = &mut *raw_storage;
+        intrinsics::move_val_init(storage, doc);
 
         compartment.define_property(~"document", RUST_OBJECT_TO_JSVAL(instance.ptr),
                                     GetJSClassHookStubPointer(PROPERTY_STUB) as *u8,
                                     GetJSClassHookStubPointer(STRICT_PROPERTY_STUB) as *u8,
                                     JSPROP_ENUMERATE);
     }
-
-    instance.ptr
+    JSManaged::from_raw(instance.ptr)
 }
 
 impl CacheableWrapper for Document {
@@ -152,11 +147,13 @@ impl CacheableWrapper for Document {
         unsafe { cast::transmute(&self.wrapper) }
     }
 
-    fn wrap_object_shared(@mut self, cx: *JSContext, _scope: *JSObject) -> *JSObject {
-        let script_context = task_from_context(cx);
-        unsafe {
-            create((*script_context).js_compartment, self)
-        }
+    fn wrap_object_shared(self, _cx: *JSContext, _scope: *JSObject) -> *JSObject {
+        fail!("nyi")
+    }
+
+    fn init_wrapper(self) -> *JSObject {
+        //XXXjdm
+        ptr::null()
     }
 }
 

@@ -76,3 +76,4 @@ window.alert(ev2 instanceof UIEvent);
 } catch (x) {
   window.alert("ok");
 }*/
+window.close();

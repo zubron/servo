@@ -4,7 +4,7 @@
 
 use dom::bindings::codegen::HTMLCollectionBinding;
 use dom::bindings::utils::{CacheableWrapper, BindingObject, WrapperCache};
-use dom::bindings::utils::{DOMString, ErrorResult};
+use dom::bindings::utils::{DOMString, ErrorResult, JSManaged};
 use dom::node::{AbstractNode, ScriptView};
 use script_task::{task_from_context, global_script_context};
 
@@ -19,22 +19,14 @@ pub struct HTMLCollection {
 }
 
 impl HTMLCollection {
-    pub fn new(elements: ~[AbstractNode<ScriptView>]) -> @mut HTMLCollection {
-        let collection = @mut HTMLCollection {
+    pub fn new(elements: ~[AbstractNode<ScriptView>]) -> JSManaged<HTMLCollection> {
+        let collection = HTMLCollection {
             elements: elements,
             wrapper: WrapperCache::new()
         };
-        collection.init_wrapper();
-        collection
-    }
-
-    pub fn init_wrapper(@mut self) {
-        let script_context = global_script_context();
-        let cx = script_context.js_compartment.cx.ptr;
-        let owner = script_context.root_frame.get_ref().window;
-        let cache = owner.get_wrappercache();
-        let scope = cache.get_wrapper();
-        self.wrap_object_shared(cx, scope);
+        let coll = JSManaged::new(collection);
+        assert!(coll.wrapper != ptr::null())
+        coll
     }
     
     pub fn Length(&self) -> u32 {
@@ -42,6 +34,7 @@ impl HTMLCollection {
     }
 
     pub fn Item(&self, index: u32) -> Option<AbstractNode<ScriptView>> {
+        debug!("item!");
         if index < self.Length() {
             Some(self.elements[index])
         } else {
@@ -61,10 +54,10 @@ impl HTMLCollection {
 }
 
 impl BindingObject for HTMLCollection {
-    fn GetParentObject(&self, cx: *JSContext) -> @mut CacheableWrapper {
+    fn GetParentObject(&self, cx: *JSContext) -> *JSContext {
         let script_context = task_from_context(cx);
         unsafe {
-            (*script_context).root_frame.get_ref().window as @mut CacheableWrapper
+            (*script_context).root_frame.get_ref().window.wrapper
         }
     }
 }
@@ -76,8 +69,15 @@ impl CacheableWrapper for HTMLCollection {
         }
     }
 
-    fn wrap_object_shared(@mut self, cx: *JSContext, scope: *JSObject) -> *JSObject {
+    fn wrap_object_shared(self, cx: *JSContext, scope: *JSObject) -> *JSObject {
         let mut unused = false;
         HTMLCollectionBinding::Wrap(cx, scope, self, &mut unused)
+    }
+
+    pub fn init_wrapper(self) -> *JSObject {
+        let script_context = global_script_context();
+        let cx = script_context.js_compartment.cx.ptr;
+        let owner = script_context.root_frame.get_ref().window;
+        self.wrap_object_shared(cx, owner.wrapper)
     }
 }

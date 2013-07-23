@@ -3,33 +3,27 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use dom::bindings::codegen::DOMParserBinding;
-use dom::bindings::utils::{DOMString, ErrorResult, WrapperCache, CacheableWrapper};
+use dom::bindings::utils::{DOMString, ErrorResult, WrapperCache, JSManaged};
 use dom::document::Document;
 use dom::element::{Element, HTMLHtmlElement, HTMLHtmlElementTypeId};
 use dom::node::Node;
 use dom::window::Window;
-use script_task::global_script_context;
 
 pub struct DOMParser {
-    owner: @mut Window, //XXXjdm Document instead?
+    owner: JSManaged<Window>, //XXXjdm Document instead?
     wrapper: WrapperCache
 }
 
 impl DOMParser {
-    pub fn new(owner: @mut Window) -> @mut DOMParser {
-        let parser = @mut DOMParser {
-            owner: owner,
+    pub fn new(owner: &JSManaged<Window>) -> JSManaged<DOMParser> {
+        let parser = DOMParser {
+            owner: owner.clone(),
             wrapper: WrapperCache::new()
         };
-
-        let cx = global_script_context().js_compartment.cx.ptr;
-        let cache = owner.get_wrappercache();
-        let scope = cache.get_wrapper();
-        parser.wrap_object_shared(cx, scope);
-        parser
+        JSManaged::new(parser)
     }
 
-    pub fn Constructor(owner: @mut Window, _rv: &mut ErrorResult) -> @mut DOMParser {
+    pub fn Constructor(owner: &JSManaged<Window>, _rv: &mut ErrorResult) -> JSManaged<DOMParser> {
         DOMParser::new(owner)
     }
 
@@ -37,9 +31,9 @@ impl DOMParser {
                            _s: DOMString,
                            _type: DOMParserBinding::SupportedType,
                            _rv: &mut ErrorResult)
-                           -> @mut Document {
+                           -> JSManaged<Document> {
         unsafe {
-            let root = ~HTMLHtmlElement {
+            let root = HTMLHtmlElement {
                 parent: Element::new(HTMLHtmlElementTypeId, ~"html")
             };
 

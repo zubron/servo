@@ -84,6 +84,6 @@ pub fn _obj_toString(cx: *JSContext, className: *libc::c_char) -> *JSString {
   }
 }
 
-pub fn GetExpandoObject(_proxy: *JSObject) -> *JSObject {
-    ptr::null()
+pub fn GetExpandoObject(proxy: *JSObject) -> *JSObject {
+    proxy
 }

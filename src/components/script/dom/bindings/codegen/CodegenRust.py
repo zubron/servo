@@ -90,7 +90,7 @@ class CastableObjectUnwrapper():
 
     codeOnFailure is the code to run if unwrapping fails.
     """
-    def __init__(self, descriptor, source, target, codeOnFailure):
+    def __init__(self, descriptor, source, target, codeOnFailure, isOptional=False):
         assert descriptor.castable
 
         self.substitution = { "type" : descriptor.nativeType,
@@ -99,7 +99,13 @@ class CastableObjectUnwrapper():
                               "protoID" : "PrototypeList::id::" + descriptor.name + " as uint",
                               "source" : source,
                               "target" : target,
+                              "targetValuePre": "JSManaged::from_raw::<%s>(" % descriptor.nativeType,
+                              "targetValuePost": ")",
                               "codeOnFailure" : CGIndenter(CGGeneric(codeOnFailure), 4).define() }
+        if isOptional:
+            self.substitution["targetValuePre"] = "Some(" + self.substitution["targetValuePre"]
+            self.substitution["targetValuePost"] += ")"
+
         if descriptor.hasXPConnectImpls:
             # We don't use xpc_qsUnwrapThis because it will always throw on
             # unwrap failure, whereas we want to control whether we throw or
@@ -120,8 +126,8 @@ class CastableObjectUnwrapper():
 
     def __str__(self):
         return string.Template(
-"""match unwrap_object(${source}, ${prototype}, ${depth}) {
-  Ok(val) => ${target} = val,
+"""match can_unwrap_object(${source}, ${prototype}, ${depth}) {
+  Ok(()) => ${target} = ${targetValuePre}${source}${targetValuePost},
   Err(()) => {
     ${codeOnFailure}
   }
@@ -139,10 +145,10 @@ class FailureFatalCastableObjectUnwrapper(CastableObjectUnwrapper):
     """
     As CastableObjectUnwrapper, but defaulting to throwing if unwrapping fails
     """
-    def __init__(self, descriptor, source, target):
+    def __init__(self, descriptor, source, target, isOptional=False):
         CastableObjectUnwrapper.__init__(self, descriptor, source, target,
                                          "return 0; //XXXjdm return Throw<%s>(cx, rv);" %
-                                         toStringBool(not descriptor.workers))
+                                         toStringBool(not descriptor.workers), isOptional)
 
 class CGThing():
     """
@@ -893,7 +899,10 @@ for (uint32_t i = 0; i < length; ++i) {
                            not descriptor.workers) or isMember
 
         typeName = descriptor.nativeType
-        typePtr = descriptor.pointerType + typeName
+        if not descriptor.inhibitManaged:
+            typePtr = 'JSManaged<' + typeName + '>'
+        else:
+            typePtr = typeName
 
         # Compute a few things:
         #  - declType is the type we want to return as the first element of our
@@ -924,12 +933,14 @@ for (uint32_t i = 0; i < length; ++i) {
                         descriptor,
                         "JSVAL_TO_OBJECT(${val})",
                         "${declName}",
-                        failureCode))
+                        failureCode,
+                        type.nullable()))
             else:
                 templateBody += str(FailureFatalCastableObjectUnwrapper(
                         descriptor,
                         "JSVAL_TO_OBJECT(${val})",
-                        "${declName}"))
+                        "${declName}",
+                        type.nullable()))
         elif descriptor.interface.isCallback() and False:
             #XXXjdm unfinished
             templateBody += str(CallbackObjectUnwrapper(
@@ -1534,7 +1545,7 @@ for (uint32_t i = 0; i < length; ++i) {
                 if not isCreator:
                     raise MethodNotCreatorError(descriptor.interface.identifier.name)
                 wrapMethod = "WrapNewBindingNonWrapperCachedObject"
-            wrap = "%s(cx, ${obj}, %s as @mut CacheableWrapper, ${jsvalPtr})" % (wrapMethod, result)
+            wrap = "%s(cx, ${obj}, %s.wrapper, ${jsvalPtr})" % (wrapMethod, result)
             # We don't support prefable stuff in workers.
             assert(not descriptor.prefable or not descriptor.workers)
             if not descriptor.prefable:
@@ -1556,7 +1567,7 @@ for (uint32_t i = 0; i < length; ++i) {
             if descriptor.pointerType == '':
                 wrap = "%s.wrap(cx, ${obj}, ${jsvalPtr})" % result
             else:
-                wrap = "if WrapNewBindingObject(cx, ${obj}, %s as @mut CacheableWrapper, ${jsvalPtr}) { 1 } else { 0 };" % result
+                wrap = "if WrapNewBindingObject(cx, ${obj}, %s.wrapper, ${jsvalPtr}) { 1 } else { 0 };" % result
             wrappingCode += wrapAndSetPtr(wrap)
         return (wrappingCode, False)
 
@@ -1706,10 +1717,10 @@ def getRetvalDeclarationForType(returnType, descriptorProvider,
         descriptor = descriptorProvider.getDescriptor(
             returnType.unroll().inner.identifier.name)
         result = CGGeneric(descriptor.nativeType)
+        if not descriptor.inhibitManaged:
+            result = CGWrapper(result, pre="JSManaged<", post=">")
         if returnType.nullable():
-            result = CGWrapper(result, pre=("Option<" + descriptor.pointerType), post=">")
-        else:
-            result = CGWrapper(result, pre=descriptor.pointerType)
+            result = CGWrapper(result, pre="Option<", post=">")
         return result, False
     if returnType.isCallback():
         # XXXbz we're going to assume that callback types are always
@@ -2215,7 +2226,7 @@ class CGDOMJSClass(CGThing):
 static Class_name: [u8, ..%i] = %s;
 static Class: DOMJSClass = DOMJSClass {
   base: JSClass { name: &Class_name as *u8 as *libc::c_char,
-    flags: JSCLASS_IS_DOMJSCLASS | ((1 & JSCLASS_RESERVED_SLOTS_MASK) << JSCLASS_RESERVED_SLOTS_SHIFT), //JSCLASS_HAS_RESERVED_SLOTS(1),
+    flags: JSCLASS_IS_INLINE_DOMJSCLASS | ((MAX_FIXED_SLOTS & JSCLASS_RESERVED_SLOTS_MASK) << JSCLASS_RESERVED_SLOTS_SHIFT), //JSCLASS_HAS_RESERVED_SLOTS(MAX_FIXED_SLOTS), //XXXjdm don't allocate maximum unnecessarily
     addProperty: %s, /* addProperty */
     delProperty: crust::JS_PropertyStub,       /* delProperty */
     getProperty: crust::JS_PropertyStub,       /* getProperty */
@@ -2460,13 +2471,20 @@ def CreateBindingJSObject(descriptor, parent):
   let handler = (*script_context).dom_static.proxy_handlers.get(&(PrototypeList::id::%s as uint));
 """ % descriptor.name
         create = handler + """  let obj = NewProxyObject(aCx, *handler,
-                           ptr::to_unsafe_ptr(&RUST_PRIVATE_TO_JSVAL(squirrel_away(aObject) as *libc::c_void)),
+                           (&JSVAL_VOID) as *JSVal,
                            proto, %s,
-                           ptr::null(), ptr::null());
+                           ptr::null(), ptr::null(), MAX_FIXED_SLOTS - DOM_PROXY_OBJECT_SLOT /*XXXjdm not all slots are necessary*/);
   if obj.is_null() {
     return ptr::null();
   }
 
+  // Reserve all possible storage for our DOM object
+  for uint::range(DOM_PROXY_OBJECT_SLOT as uint, MAX_FIXED_SLOTS as uint) |i| {
+    SetReservedSlotWithBarrier(obj, i as u64, (&JSVAL_VOID) as *JSVal);
+  }
+  let raw_storage = GetInlineStorage(obj, DOM_PROXY_OBJECT_SLOT) as *mut %s;
+  let storage: &mut %s = &mut *raw_storage;
+  intrinsics::move_val_init(storage, aObject);
 """
     else:
         create = """  let obj = JS_NewObject(aCx, &Class.base, proto, %s);
@@ -2474,16 +2492,17 @@ def CreateBindingJSObject(descriptor, parent):
     return ptr::null();
   }
 
-  JS_SetReservedSlot(obj, DOM_OBJECT_SLOT as u32,
-                     RUST_PRIVATE_TO_JSVAL(squirrel_away(aObject) as *libc::c_void));
+  let raw_storage = GetInlineStorage(obj, DOM_OBJECT_SLOT as u32) as *mut %s;
+  let storage: &mut %s = &mut *raw_storage;
+  intrinsics::move_val_init(storage, aObject);
 """
-    return create % parent
+    return create % (parent, descriptor.nativeType, descriptor.nativeType)
 
 class CGWrapWithCacheMethod(CGAbstractMethod):
     def __init__(self, descriptor):
         assert descriptor.interface.hasInterfacePrototypeObject()
         args = [Argument('*JSContext', 'aCx'), Argument('*JSObject', 'aScope'),
-                Argument('@mut ' + descriptor.nativeType, 'aObject'),
+                Argument(descriptor.nativeType, 'mut aObject'),
                 Argument('*mut bool', 'aTriedToWrap')]
         CGAbstractMethod.__init__(self, descriptor, 'Wrap_', '*JSObject', args)
 
@@ -2493,8 +2512,7 @@ class CGWrapWithCacheMethod(CGAbstractMethod):
   return aObject->GetJSObject();"""
 
         return """  *aTriedToWrap = true;
-  let mut parent = aObject.GetParentObject(aCx);
-  let parent = WrapNativeParent(aCx, aScope, parent);
+  let parent = aObject.GetParentObject(aCx);
   if parent.is_null() {
     return ptr::null();
   }
@@ -2520,7 +2538,7 @@ class CGWrapMethod(CGAbstractMethod):
         # XXX can we wrap if we don't have an interface prototype object?
         assert descriptor.interface.hasInterfacePrototypeObject()
         args = [Argument('*JSContext', 'aCx'), Argument('*JSObject', 'aScope'),
-                Argument(descriptor.pointerType + descriptor.nativeType, 'aObject'), Argument('*mut bool', 'aTriedToWrap')]
+                Argument(descriptor.nativeType, 'aObject'), Argument('*mut bool', 'aTriedToWrap')]
         CGAbstractMethod.__init__(self, descriptor, 'Wrap', '*JSObject', args, inline=True, pub=True)
 
     def definition_body(self):
@@ -2531,7 +2549,7 @@ class CGWrapNonWrapperCacheMethod(CGAbstractMethod):
         # XXX can we wrap if we don't have an interface prototype object?
         assert descriptor.interface.hasInterfacePrototypeObject()
         args = [Argument('JSContext*', 'aCx'), Argument('JSObject*', 'aScope'),
-                Argument('@' + descriptor.nativeType, 'aObject')]
+                Argument('&' + descriptor.nativeType, 'aObject')]
         CGAbstractMethod.__init__(self, descriptor, 'Wrap', 'JSObject*', args)
 
     def definition_body(self):
@@ -2894,7 +2912,7 @@ class CGCallGenerator(CGThing):
             if a.type.isObject() and not a.type.nullable() and not a.optional:
                 name = "(JSObject&)" + name
             #XXXjdm Perhaps we should pass all nontrivial types by borrowed pointer
-            if a.type.isDictionary():
+            if a.type.isDictionary() or a.type.isGeckoInterface():
                 name = "&" + name
             args.append(CGGeneric(name))
 
@@ -3166,7 +3184,7 @@ class CGAbstractBindingMethod(CGAbstractExternMethod):
                       "  return false as JSBool;\n"
                       "}\n"
                       "\n"
-                      "let this: *rust_box<%s>;" % self.descriptor.nativeType))
+                      "let this: JSManaged<%s>;" % self.descriptor.nativeType))
 
     def generate_code(self):
         assert(False) # Override me
@@ -3183,7 +3201,7 @@ class CGGenericMethod(CGAbstractBindingMethod):
     def generate_code(self):
         return CGIndenter(CGGeneric(
             "let _info: *JSJitInfo = RUST_FUNCTION_VALUE_TO_JITINFO(JS_CALLEE(cx, vp));\n"
-            "return CallJitMethodOp(_info, cx, obj, ptr::to_unsafe_ptr(&(*this).payload) as *libc::c_void, argc, vp);"))
+            "return do this.with_mut |this| { CallJitMethodOp(_info, cx, obj, ptr::to_unsafe_ptr(this) as *libc::c_void, argc, vp) };"))
 
 class CGAbstractStaticMethod(CGAbstractMethod):
     """
@@ -3239,7 +3257,7 @@ class CGGenericGetter(CGAbstractBindingMethod):
     def generate_code(self):
         return CGIndenter(CGGeneric(
             "let _info: *JSJitInfo = RUST_FUNCTION_VALUE_TO_JITINFO(JS_CALLEE(cx, vp));\n"
-            "return CallJitPropertyOp(_info, cx, obj, ptr::to_unsafe_ptr(&(*this).payload) as *libc::c_void, vp);"))
+            "return do this.with_mut |this| { CallJitPropertyOp(_info, cx, obj, ptr::to_unsafe_ptr(this) as *libc::c_void, vp) };"))
 
 class CGSpecializedGetter(CGAbstractExternMethod):
     """
@@ -3294,7 +3312,7 @@ class CGGenericSetter(CGAbstractBindingMethod):
                 "let undef = JSVAL_VOID;\n"
                 "let argv: *JSVal = if argc != 0 { JS_ARGV(cx, cast::transmute(vp)) } else { &undef as *JSVal };\n"
                 "let info: *JSJitInfo = RUST_FUNCTION_VALUE_TO_JITINFO(JS_CALLEE(cx, cast::transmute(vp)));\n"
-                "if CallJitPropertyOp(info, cx, obj, ptr::to_unsafe_ptr(&(*this).payload) as *libc::c_void, cast::transmute(vp)) == 0 {"
+                "if do this.with_mut |this| { CallJitPropertyOp(info, cx, obj, ptr::to_unsafe_ptr(this) as *libc::c_void, cast::transmute(vp)) } == 0 {"
                 "  return 0;\n"
                 "}\n"
                 "*vp = JSVAL_VOID;\n"
@@ -3567,12 +3585,7 @@ class CGProxyUnwrap(CGAbstractMethod):
     def declare(self):
         return ""
     def definition_body(self):
-        return """  /*if (xpc::WrapperFactory::IsXrayWrapper(obj)) {
-    obj = js::UnwrapObject(obj);
-  }*/
-  //MOZ_ASSERT(IsProxy(obj));
-  let box: *rust_box<%s> = cast::transmute(RUST_JSVAL_TO_PRIVATE(GetProxyPrivate(obj)));
-  return ptr::to_unsafe_ptr(&(*box).payload);""" % (self.descriptor.nativeType)
+        return "  return GetInlineStorage(obj, DOM_PROXY_OBJECT_SLOT) as *%s;" % self.descriptor.nativeType
 
 class CGDOMJSProxyHandler_get(CGAbstractExternMethod):
     def __init__(self, descriptor):
@@ -3714,9 +3727,10 @@ def finalizeHook(descriptor, hookName, context):
         pass
     else:
         assert descriptor.nativeIsISupports
-        release = """let val = JS_GetReservedSlot(obj, 0);
-let _: %s = cast::transmute(RUST_JSVAL_TO_PRIVATE(val));
-""" % (descriptor.pointerType + descriptor.nativeType)
+        release = """let orig = unwrap::<*mut %s>(obj);
+let replacement = intrinsics::uninit();
+intrinsics::move_val(&mut *orig, replacement);
+""" % (descriptor.nativeType)
     #return clearWrapper + release
     return release
 
@@ -3751,9 +3765,9 @@ class CGClassConstructHook(CGAbstractExternMethod):
   //       from the context for now. 
   let script_context = task_from_context(cx);
   let global = (*script_context).root_frame.get_ref().window;
-  let obj = global.get_wrappercache().get_wrapper();
+  let obj = global.wrapper;
 """
-            preArgs = ["global"]
+            preArgs = ["&global"]
 
         name = self._ctor.identifier.name
         nativeName = MakeNativeName(self.descriptor.binaryNames.get(name, name))
@@ -4262,11 +4276,15 @@ class CGRegisterProtos(CGAbstractMethod):
                                   unsafe=False, pub=True)
         self.config = config
 
+    def _sanityCheckName(self, desc):
+        return "sanity_check" + ("_proxy" if desc.proxy else "")
+
     def _registerProtos(self):
-        lines = ["  assert!(codegen::%sBinding::DefineDOMInterface(\n"
+        lines = ["  JSManaged::%s::<%s>();\n"
+                 "  assert!(codegen::%sBinding::DefineDOMInterface(\n"
                  "      compartment.cx.ptr,\n"
                  "      compartment.global_obj.ptr,\n"
-                 "      &mut unused));" % (desc.name)
+                 "      &mut unused));" % (self._sanityCheckName(desc), desc.name, desc.name)
                  for desc in self.config.getDescriptors(hasInterfaceObject=True,
                                                         isExternal=False,
                                                         workers=False,
@@ -4372,6 +4390,9 @@ class CGBindingRoot(CGThing):
                           'std::vec',
                           'std::str',
                           'std::num',
+                          'std::util',
+                          'std::uint',
+                          'std::unstable::intrinsics'
                          ], 
                          [],
                          curr)
@@ -4461,7 +4482,9 @@ class GlobalGenRoots():
                                                             workers=False,
                                                             register=True)]
         curr = CGImports([], [], ['dom::bindings::codegen',
-                                  'js::rust::Compartment'], defineIncludes, curr)
+                                  'dom::bindings::utils::JSManaged',
+                                  'js::rust::Compartment',
+                                  'dom::*'], defineIncludes, curr)
 
         # Done.
         return curr

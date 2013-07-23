@@ -4,7 +4,7 @@
 
 //! Element nodes.
 
-use dom::bindings::utils::DOMString;
+use dom::bindings::utils::{DOMString, JSManaged};
 use dom::clientrect::ClientRect;
 use dom::clientrectlist::ClientRectList;
 use dom::node::{ElementNodeTypeId, Node, ScriptView};
@@ -153,31 +153,38 @@ impl<'self> Element {
             self.attrs.push(Attr::new(name.to_str(), value_cell.take().clone()));
         }
 
-        match self.parent.owner_doc {
-            Some(owner) => owner.content_changed(),
+        match self.parent.out_of_line.owner_doc {
+            Some(owner) => {
+                do owner.with_imm |doc| {
+                    doc.content_changed()
+                }
+            }
             None => {}
         }
     }
 
-    pub fn getClientRects(&self) -> Option<@mut ClientRectList> {
-        let rects = match self.parent.owner_doc {
+    pub fn getClientRects(&self) -> Option<JSManaged<ClientRectList>> {
+        let rects = match self.parent.out_of_line.owner_doc {
             Some(doc) => {
+              do doc.with_imm |doc| {
                 match doc.window {
                     Some(win) => {
                         let node = self.parent.abstract.get();
                         assert!(node.is_element());
                         let script_task = unsafe {
-                            &mut *win.script_task
+                            do win.with_imm |win| {
+                                &mut *win.script_task
+                            }
                         };
                         let (port, chan) = comm::stream();
                         match script_task.query_layout(ContentBoxesQuery(node, chan), port) {
                             Ok(ContentBoxesResponse(rects)) => {
                                 do rects.map |r| {
                                     ClientRect::new(
-                                         r.origin.y.to_f32(),
-                                         (r.origin.y + r.size.height).to_f32(),
-                                         r.origin.x.to_f32(),
-                                         (r.origin.x + r.size.width).to_f32())
+                                        r.origin.y.to_f32(),
+                                        (r.origin.y + r.size.height).to_f32(),
+                                        r.origin.x.to_f32(),
+                                        (r.origin.x + r.size.width).to_f32())
                                 }
                             },
                             Err(()) => {
@@ -191,6 +198,7 @@ impl<'self> Element {
                         ~[]
                     }
                 }
+              }
             }
             None => {
                 debug!("no document");
@@ -200,14 +208,19 @@ impl<'self> Element {
         Some(ClientRectList::new(rects))
     }
 
-    pub fn getBoundingClientRect(&self) -> Option<@mut ClientRect> {
-        match self.parent.owner_doc {
+    pub fn getBoundingClientRect(&self) -> Option<JSManaged<ClientRect>> {
+        match self.parent.out_of_line.owner_doc {
             Some(doc) => {
+              do doc.with_imm |doc| {
                 match doc.window {
                     Some(win) => {
                         let node = self.parent.abstract.get();
                         assert!(node.is_element());
-                        let script_task = unsafe { &mut *win.script_task };
+                        let script_task = unsafe {
+                            do win.with_imm |win| {
+                                &mut *win.script_task
+                            }
+                        };
                         let (port, chan) = comm::stream();
                         match script_task.query_layout(ContentBoxQuery(node, chan), port) {
                             Ok(ContentBoxResponse(rect)) => {
@@ -228,6 +241,7 @@ impl<'self> Element {
                         None
                     }
                 }
+              }
             }
             None => {
                 debug!("no document");
