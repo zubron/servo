@@ -640,6 +640,7 @@ pub trait AttributeHandlers {
     fn get_string_attribute(self, name: &Atom) -> DOMString;
     fn set_string_attribute(self, name: &Atom, value: DOMString);
     fn set_tokenlist_attribute(self, name: &Atom, value: DOMString);
+    fn get_atom_attribute(self, name: &Atom) -> Atom;
     fn get_uint_attribute(self, name: &Atom) -> u32;
     fn set_uint_attribute(self, name: &Atom, value: u32);
 }
@@ -839,6 +840,23 @@ impl<'a> AttributeHandlers for JSRef<'a, Element> {
     fn set_tokenlist_attribute(self, name: &Atom, value: DOMString) {
         assert!(name.as_slice() == name.as_slice().to_ascii_lower().as_slice());
         self.set_attribute(name, AttrValue::from_tokenlist(value));
+    }
+
+    fn get_atom_attribute(self, name: &Atom) -> Atom {
+        assert!(name.as_slice().chars().all(|ch| {
+            !ch.is_ascii() || ch.to_ascii().to_lowercase() == ch.to_ascii()
+        }));
+        let attribute = self.get_attribute(ns!(""), name).root();
+        match attribute {
+            Some(attribute) => {
+                match *attribute.value() {
+                    AttrValue::Atom(ref value) => value.clone(),
+                    _ => panic!("Expected an AttrValue::Atom: \
+                                 implement parse_plain_attribute"),
+                }
+            }
+            None => atom!(""),
+        }
     }
 
     fn get_uint_attribute(self, name: &Atom) -> u32 {
