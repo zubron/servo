@@ -62,6 +62,11 @@ impl<'a> DOMStringMapMethods for JSRef<'a, DOMStringMap> {
             }
         }
     }
+
+    fn SupportedNames(self) -> Vec<DOMString> {
+        let element = self.element.root();
+        element.get_custom_attributes()
+    }
 }
 
 impl Reflectable for DOMStringMap {

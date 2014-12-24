@@ -2,8 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use dom::attr::Attr;
-use dom::attr::AttrHelpers;
+use dom::attr::{Attr, AttrHelpers, AttrValue};
 use dom::bindings::codegen::Bindings::EventHandlerBinding::EventHandlerNonNull;
 use dom::bindings::codegen::Bindings::HTMLElementBinding;
 use dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;

@@ -116,6 +116,12 @@ impl<'a> StorageMethods for JSRef<'a, Storage> {
             //TODO send notification
         }
     }
+
+    fn SupportedNames(self) -> Vec<DOMString> {
+        let (sender, receiver) = channel();
+        self.get_storage_task().send(StorageTaskMsg::SupportedNames(sender, self.get_url()));
+        receiver.recv()
+    }
 }
 
 impl Reflectable for Storage {

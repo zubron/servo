@@ -244,6 +244,48 @@ impl<'a> HTMLCollectionMethods for JSRef<'a, HTMLCollection> {
         *found = maybe_elem.is_some();
         maybe_elem
     }
+
+    fn SupportedNames(self) -> Vec<DOMString> {
+        // Step 1.
+        let mut result: Vec<Atom> = vec![];
+
+        // Step 2.
+        {
+            let substeps = |element: JSRef<Element>| {
+                match element.get_atom_attribute(&atom!("id")) {
+                    atom!("") => (),
+                    ref id if result.contains(id) => (),
+                    id => result.push(id),
+                }
+
+                if *element.namespace() == ns!(HTML) {
+                    match element.get_atom_attribute(&atom!("name")) {
+                        atom!("") => (),
+                        ref name if result.contains(name) => (),
+                        name => result.push(name),
+                    }
+                }
+            };
+            match self.collection {
+                CollectionTypeId::Static(ref elements) => {
+                    for element in elements.iter() {
+                        let element = element.root();
+                        substeps(*element);
+                    }
+                }
+                CollectionTypeId::Live(ref root, ref filter) => {
+                    let root = root.root();
+                    for element in HTMLCollection::traverse(*root)
+                            .filter(|element| filter.filter(*element, *root)) {
+                        substeps(element);
+                    }
+                }
+            }
+        }
+
+        // Step 3.
+        result.into_iter().map(|name| name.as_slice().into_string()).collect()
+    }
 }
 
 impl Reflectable for HTMLCollection {

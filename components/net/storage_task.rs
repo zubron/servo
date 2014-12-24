@@ -31,6 +31,9 @@ pub enum StorageTaskMsg {
     /// clears the associated storage data by removing all the key/value pairs
     Clear(Sender<bool>, Url),
 
+    /// gets the supported names
+    SupportedNames(Sender<Vec<DOMString>>, Url),
+
     /// shut down this task
     Exit
 }
@@ -88,6 +91,9 @@ impl StorageManager {
                 }
                 StorageTaskMsg::Clear(sender, url) => {
                     self.clear(sender, url)
+                }
+                StorageTaskMsg::SupportedNames(sender, url) => {
+                    self.supported_names(sender, url)
                 }
                 StorageTaskMsg::Exit => {
                     break
@@ -149,6 +155,16 @@ impl StorageManager {
                         } else {
                             false
                         }}));
+    }
+
+    fn supported_names(&self, sender: Sender<Vec<DOMString>>, url: Url) {
+        let origin = self.get_origin_as_string(url);
+        let data = self.data.get(&origin);
+        let names = match data {
+            Some(data) => data.keys().map(|key| key.clone()).collect(),
+            None => vec![],
+        };
+        sender.send(names);
     }
 
     fn get_origin_as_string(&self, url: Url) -> String {
