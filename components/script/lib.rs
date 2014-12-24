@@ -5,7 +5,7 @@
 #![comment = "The Servo Parallel Browser Project"]
 #![license = "MPL"]
 
-#![feature(default_type_params, globs, macro_rules, phase, unsafe_destructor, if_let)]
+#![feature(default_type_params, globs, macro_rules, phase, unsafe_destructor, if_let, while_let)]
 
 #![deny(unused_imports)]
 #![deny(unused_variables)]

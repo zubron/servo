@@ -282,6 +282,9 @@ class Descriptor(DescriptorProvider):
         maybeAppendInfallibleToAttrs(attrs, throws)
         return attrs
 
+    def supportsNamedProperties(self):
+        return self.operations['NamedGetter'] is not None
+
     def isGlobal(self):
         """
         Returns true if this is the primary interface for a global object

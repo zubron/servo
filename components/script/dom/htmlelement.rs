@@ -137,6 +137,7 @@ pub trait HTMLElementCustomAttributeHelpers {
     fn set_custom_attr(self, name: DOMString, value: DOMString) -> ErrorResult;
     fn get_custom_attr(self, name: DOMString) -> Option<DOMString>;
     fn delete_custom_attr(self, name: DOMString);
+    fn get_custom_attributes(self) -> Vec<DOMString>;
 }
 
 fn to_snake_case(name: DOMString) -> DOMString {
@@ -174,6 +175,43 @@ impl<'a> HTMLElementCustomAttributeHelpers for JSRef<'a, HTMLElement> {
     fn delete_custom_attr(self, name: DOMString) {
         let element: JSRef<Element> = ElementCast::from_ref(self);
         element.remove_attribute(ns!(""), to_snake_case(name).as_slice())
+    }
+
+    fn get_custom_attributes(self) -> Vec<DOMString> {
+        let element: JSRef<Element> = ElementCast::from_ref(self);
+        element.get_all_attributes().into_iter().map(|attr| attr.root()).filter_map(|attr| {
+            if !attr.local_name().as_slice().starts_with("data-") {
+                return None;
+            }
+
+            let remainder = attr.local_name().as_slice().slice_from(5);
+            if remainder.chars().any(|c| 'A' <= c && c <= 'Z') {
+                return None;
+            }
+
+            let mut result = "".into_string();
+            let mut chars = remainder.chars();
+            while let Some(c) = chars.next() {
+                if c == '-' {
+                    match chars.next() {
+                        Some(c @ 'a'...'z') => {
+                            result.push(c.to_uppercase());
+                        }
+                        Some(c) => {
+                            result.push('-');
+                            result.push(c);
+                        }
+                        None => {
+                            result.push('-');
+                            break;
+                        }
+                    }
+                } else {
+                    result.push(c);
+                }
+            }
+            Some(result)
+        }).collect()
     }
 }
 

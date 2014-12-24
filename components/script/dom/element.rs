@@ -614,6 +614,7 @@ pub trait AttributeHandlers {
                      -> Option<Temporary<Attr>>;
     fn get_attributes(self, local_name: &Atom)
                       -> Vec<Temporary<Attr>>;
+    fn get_all_attributes(self) -> Vec<Temporary<Attr>>;
     fn set_attribute_from_parser(self,
                                  name: QualName,
                                  value: DOMString,
@@ -657,6 +658,12 @@ impl<'a> AttributeHandlers for JSRef<'a, Element> {
             } else {
                 None
             }
+        }).collect()
+    }
+
+    fn get_all_attributes(self) -> Vec<Temporary<Attr>> {
+        self.attrs.borrow().iter().map(|&attribute| {
+            Temporary::new(attribute)
         }).collect()
     }
 

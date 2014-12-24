@@ -4051,6 +4051,9 @@ class CGInterfaceTrait(CGThing):
                     rettype = return_type(descriptor, rettype, infallible)
                     yield name, arguments, rettype
 
+                if descriptor.supportsNamedProperties():
+                    yield 'SupportedNames', [], 'Vec<DOMString>'
+
         def fmt(arguments):
             return "".join(", %s: %s" % argument for argument in arguments)
 
