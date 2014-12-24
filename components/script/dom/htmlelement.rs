@@ -239,6 +239,13 @@ impl<'a> VirtualMethods for JSRef<'a, HTMLElement> {
                                                   attr.value().as_slice().to_string());
         }
     }
+
+    fn parse_plain_attribute(&self, name: &Atom, value: DOMString) -> AttrValue {
+        match name {
+            &atom!("name") => AttrValue::from_atomic(value),
+            _ => self.super_type().unwrap().parse_plain_attribute(name, value),
+        }
+    }
 }
 
 impl Reflectable for HTMLElement {
