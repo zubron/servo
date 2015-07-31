@@ -17,6 +17,7 @@ use util::str::DOMString;
 use selectors::parser::PseudoElement;
 use string_cache::Atom;
 use style::properties::{is_supported_property, longhands_from_shorthand, parse_one_declaration};
+use style::properties::parse_style_attribute;
 use style::properties::PropertyDeclaration;
 
 use std::ascii::AsciiExt;
@@ -354,6 +355,56 @@ impl<'a> CSSStyleDeclarationMethods for &'a CSSStyleDeclaration {
         let rval = self.Item(index);
         *found = index < self.Length();
         rval
+    }
+
+    // https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext
+    fn CssText(self) -> DOMString {
+        let len = self.Length();
+        let mut result = String::new();
+        for i in 0..len {
+            if i != 0 {
+                result.push_str(" ");
+            }
+            let property_name = self.Item(i);
+            let property_value = self.GetPropertyValue(property_name.clone());
+            let property_priority = self.GetPropertyPriority(property_name.clone());
+            result.push_str(&property_name);
+            result.push_str(&property_value);
+            if property_priority.len() > 0 {
+                result.push_str(&" !");
+                result.push_str(&property_priority);
+            }
+            result.push_str(&";");
+        }
+        result
+    }
+
+    // https://drafts.csswg.org/cssom/#dom-cssstyledeclaration-csstext
+    fn SetCssText(self, value: DOMString) -> ErrorResult {
+        let owner = self.owner.root();
+        let window = window_from_node(owner.r());
+        let element = ElementCast::from_ref(owner.r());
+
+        // Step 1
+        if self.readonly {
+            return Err(Error::NoModificationAllowed);
+        }
+
+        // Step 2
+        element.clear_inline_styles();
+
+        // Step 3
+        let decl_block = parse_style_attribute(&value, &window.r().get_url());
+        if decl_block.normal.len() == 0 && decl_block.important.len() == 0 {
+            return Ok(());
+        }
+
+        element.set_inline_style(Some(decl_block));
+
+        let document = document_from_node(element);
+        let node = NodeCast::from_ref(element);
+        document.r().content_changed(node, NodeDamage::NodeStyleDamaged);
+        Ok(())
     }
 
     css_properties_accessors!(css_properties);

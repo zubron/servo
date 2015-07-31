@@ -9,8 +9,9 @@
  */
 
 interface CSSStyleDeclaration {
-  //[SetterThrows]
-  //         attribute DOMString cssText;
+  [SetterThrows]
+  attribute DOMString cssText;
+
   readonly attribute unsigned long length;
   getter DOMString item(unsigned long index);
   DOMString getPropertyValue(DOMString property);

@@ -581,7 +581,9 @@ pub trait ElementHelpers<'a> {
     fn summarize(self) -> Vec<AttrInfo>;
     fn is_void(self) -> bool;
     fn remove_inline_style_property(self, property: &str);
+    fn clear_inline_styles(self);
     fn update_inline_style(self, property_decl: PropertyDeclaration, style_priority: StylePriority);
+    fn set_inline_style(self, property_decl_block: Option<PropertyDeclarationBlock>);
     fn set_inline_style_property_priority(self, properties: &[&str], style_priority: StylePriority);
     fn get_inline_style_declaration(self, property: &Atom) -> Option<Ref<'a, PropertyDeclaration>>;
     fn get_important_inline_style_declaration(self, property: &Atom) -> Option<Ref<'a, PropertyDeclaration>>;
@@ -671,6 +673,18 @@ impl<'a> ElementHelpers<'a> for &'a Element {
                 return;
             }
         }
+    }
+
+    fn clear_inline_styles(self) {
+        let mut inline_declarations = self.style_attribute.borrow_mut();
+        if let &mut Some(ref mut declarations) = &mut *inline_declarations {
+            Arc::make_unique(&mut declarations.normal).clear();
+            Arc::make_unique(&mut declarations.important).clear();
+        }
+    }
+
+    fn set_inline_style(self, property_decl_block: Option<PropertyDeclarationBlock>) {
+        *self.style_attribute().borrow_mut() = property_decl_block;
     }
 
     fn update_inline_style(self, property_decl: PropertyDeclaration, style_priority: StylePriority) {
