@@ -229,15 +229,6 @@ static FORCE_CPU_PAINTING: bool = true;
 #[cfg(not(target_os="android"))]
 static FORCE_CPU_PAINTING: bool = false;
 
-#[cfg(target_os="android")]
-const DEFAULT_USER_AGENT: &'static str = "Mozilla/5.0 (Android; Mobile; rv:37.0) Servo/1.0 Firefox/37.0";
-
-// FIXME: This requires https://github.com/servo/servo/issues/7138 to provide the
-// correct string in Gonk builds (i.e., it will never be chosen today).
-#[cfg(target_os="gonk")]
-const DEFAULT_USER_AGENT: &'static str = "Mozilla/5.0 (Mobile; rv:37.0) Servo/1.0 Firefox/37.0";
-
-#[cfg(not(any(target_os="android", target_os="gonk")))]
 const DEFAULT_USER_AGENT: &'static str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.10; rv:37.0) Servo/1.0 Firefox/37.0";
 
