@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+use dom::bindings::js::RootedReference;
+
 use dom::bindings::codegen::Bindings::HTMLCollectionBinding;
 use dom::bindings::codegen::Bindings::HTMLCollectionBinding::HTMLCollectionMethods;
 use dom::bindings::global::GlobalRef;
@@ -116,11 +118,11 @@ impl HTMLCollection {
         }
     }
 
-    fn set_cached_cursor(&self, index: u32, element: Option<Root<Element>>) -> Option<Root<Element>> {
+    fn set_cached_cursor(&self, index: u32, element: Option<&Element>) -> Option<Root<Element>> {
         if let Some(element) = element {
             self.cached_cursor_index.set(OptionU32::some(index));
-            self.cached_cursor_element.set(Some(element.r()));
-            Some(element)
+            self.cached_cursor_element.set(Some(element));
+            Some(Root::from_ref(element))
         } else {
             None
         }
@@ -145,7 +147,7 @@ impl HTMLCollection {
                     // Iterate backwards, starting at the cursor.
                     let offset = cached_index - (index + 1);
                     let node: Root<Node> = Root::upcast(element);
-                    self.set_cached_cursor(index, self.elements_iter_before(node.r()).nth(offset as usize))
+                    self.set_cached_cursor(index, self.elements_iter_before(node.r()).nth(offset as usize).r())
                 }
             } else {
                 // Cache miss
@@ -255,7 +257,7 @@ impl HTMLCollection {
         // Iterate forwards from a node.
         HTMLCollectionElementsIter {
             node_iter: after.following_nodes(&self.root),
-            root: Root::from_ref(&self.root),
+            root: &*self.root,
             filter: &self.filter,
         }
     }
@@ -279,18 +281,18 @@ impl HTMLCollection {
 // TODO: Make this generic, and avoid code duplication
 pub struct HTMLCollectionElementsIter<'a> {
     node_iter: FollowingNodeIterator,
-    root: Root<Node>,
+    root: &'a Node,
     filter: &'a Box<CollectionFilter>,
 }
 
 impl<'a> Iterator for HTMLCollectionElementsIter<'a> {
-    type Item = Root<Element>;
+    type Item = &'a Element;
 
     fn next(&mut self) -> Option<Self::Item> {
         let ref filter = self.filter;
         let ref root = self.root;
         self.node_iter.by_ref()
-                      .filter_map(Root::downcast)
+                      .filter_map(|x| x.downcast())
                       .filter(|element| filter.filter(&element, root))
                       .next()
    }
@@ -339,7 +341,7 @@ impl HTMLCollectionMethods for HTMLCollection {
         self.elements_iter().find(|elem| {
             elem.get_string_attribute(&atom!("name")) == key ||
             elem.get_string_attribute(&atom!("id")) == key
-        })
+        }).map(Root::from_ref)
     }
 
     // https://dom.spec.whatwg.org/#dom-htmlcollection-item

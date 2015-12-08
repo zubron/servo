@@ -850,12 +850,12 @@ impl Node {
             None
         } else {
             match get_items().elements_iter()
-                             .map(Root::upcast::<Node>)
+                             .map(Element::upcast)
                              .map(Some)
                              .chain(iter::once(None))
                              .nth(index as usize) {
                 None => return Err(Error::IndexSize),
-                Some(node) => node,
+                Some(node) => node.map(Root::from_ref),
             }
         };
 
