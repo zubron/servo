@@ -268,7 +268,7 @@ class Request(object):
                                       self.request_path)
         self.url_parts = urlparse.urlsplit(self.url)
 
-        self._raw_headers = request_handler.headers
+        self.raw_headers = request_handler.headers
 
         self.request_line = request_handler.raw_requestline
 
@@ -326,7 +326,7 @@ class Request(object):
     @property
     def headers(self):
         if self._headers is None:
-            self._headers = RequestHeaders(self._raw_headers)
+            self._headers = RequestHeaders(self.raw_headers)
         return self._headers
 
     @property
