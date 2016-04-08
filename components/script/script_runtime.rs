@@ -21,6 +21,7 @@ use script_thread::{Runnable, STACK_ROOTS, trace_thread};
 use std::cell::Cell;
 use std::io::{Write, stdout};
 use std::marker::PhantomData;
+use std::os;
 use std::ptr;
 use time::{Tm, now};
 use util::opts;
@@ -220,7 +221,7 @@ unsafe extern "C" fn gc_slice_callback(_rt: *mut JSRuntime, progress: GCProgress
 }
 
 #[allow(unsafe_code)]
-unsafe extern "C" fn debug_gc_callback(_rt: *mut JSRuntime, status: JSGCStatus, _data: *mut libc::c_void) {
+unsafe extern "C" fn debug_gc_callback(_rt: *mut JSRuntime, status: JSGCStatus, _data: *mut os::raw::c_void) {
     match status {
         JSGCStatus::JSGC_BEGIN => thread_state::enter(thread_state::IN_GC),
         JSGCStatus::JSGC_END   => thread_state::exit(thread_state::IN_GC),
@@ -228,7 +229,7 @@ unsafe extern "C" fn debug_gc_callback(_rt: *mut JSRuntime, status: JSGCStatus, 
 }
 
 #[allow(unsafe_code)]
-unsafe extern fn trace_rust_roots(tr: *mut JSTracer, _data: *mut libc::c_void) {
+unsafe extern fn trace_rust_roots(tr: *mut JSTracer, _data: *mut os::raw::c_void) {
     trace_thread(tr);
     trace_traceables(tr);
     trace_roots(tr);
